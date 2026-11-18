@@ -1,0 +1,48 @@
+{{define "main"}}
+<main id="main" class="main main--form">
+
+<header class="page-head">
+<div class="fu-eyebrow eyebrow">&gt; new thread</div>
+<h1 class="page-title">Start a discussion</h1>
+<p class="page-sub">For questions and topics that need more room than a Slack thread.</p>
+</header>
+
+<form class="form" method="post" action="/threads">
+{{template "csrf" .}}
+
+{{if .Error -}}
+<div class="alert alert--error" role="alert"><b class="alert__icon" aria-hidden="true">[ × ]</b><span id="form-error">{{.Error}}</span></div>
+{{- end}}
+
+<div class="field">
+<label for="title">Title</label>
+<input id="title" name="title" type="text" required maxlength="{{.MaxTitleLen}}" autocomplete="off" placeholder="Ask the question or name the topic" value="{{.TitleValue}}"{{if eq .ErrorField "title"}} aria-invalid="true" aria-describedby="form-error"{{end}}>
+</div>
+
+<div class="field">
+<label for="body">Body</label>
+<textarea id="body" name="body" rows="10" required placeholder="Give people enough context to answer well." aria-describedby="body-hint{{if eq .ErrorField "body"}} form-error{{end}}"{{if eq .ErrorField "body"}} aria-invalid="true"{{end}}>{{.BodyValue}}</textarea>
+<span id="body-hint" class="hint">Markdown works. Fence code with three backticks.</span>
+</div>
+
+<fieldset class="tag-picker"{{if eq .ErrorField "tags"}} aria-describedby="form-error"{{end}}>
+<legend class="fu-label">Tags · pick one or more</legend>
+<div class="tag-picker__choices">
+{{range .Tags -}}
+<label class="tag-choice"><input type="checkbox" name="tags" value="{{.Slug}}"{{if .Checked}} checked{{end}}><span class="tag">#{{.Slug}}</span></label>
+{{end -}}
+</div>
+</fieldset>
+
+{{if .AnnouncesInSlack -}}
+<div class="alert alert--info" role="note"><b class="alert__icon" aria-hidden="true">[ i ]</b><span>Posting announces this thread in Slack with its title, tags, and a link.</span></div>
+{{- end}}
+
+<div class="form__actions">
+<button class="btn btn--primary btn--lg" type="submit">Post thread</button>
+<a class="btn btn--ghost btn--lg" href="/">Cancel</a>
+</div>
+</form>
+
+</main>
+{{end}}

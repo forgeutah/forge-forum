@@ -1,0 +1,33 @@
+{{define "main"}}
+<main id="main" class="main main--thread">
+
+<a class="back-link" href="/">← back to feed</a>
+
+<article class="thread">
+{{/* Read-only for now: this box becomes the upvote button. */ -}}
+<div class="vote vote--lg{{if .Thread.Voted}} vote--on{{end}}" role="img" aria-label="{{plural .Thread.Score "upvote" "upvotes"}}"><span aria-hidden="true">▲</span><span aria-hidden="true">{{.Thread.Score}}</span></div>
+<div class="thread__body">
+<h1 class="page-title">{{.Thread.Title}}</h1>
+<div class="byline">
+{{if .Thread.AuthorAvatar -}}
+<img class="avatar avatar--sm" src="{{.Thread.AuthorAvatar}}" alt="" width="24" height="24" referrerpolicy="no-referrer">
+{{- else -}}
+<span class="avatar avatar--sm" aria-hidden="true">{{initials .Thread.AuthorName}}</span>
+{{- end}}
+<span class="byline__name">@{{.Thread.AuthorName}}</span>
+<span>{{if .Thread.FromSlack}}posted in Slack{{else}}posted{{end}} <time datetime="{{isotime .Thread.CreatedAt}}">{{reltime .Thread.CreatedAt}}</time></span>
+{{if .Thread.EditedAt}}<span>edited <time datetime="{{isotime .Thread.EditedAt}}">{{reltime .Thread.EditedAt}}</time></span>{{end}}
+{{range .Thread.Tags}}<span class="tag">#{{.}}</span>{{end}}
+</div>
+<div class="prose">{{.Body}}</div>
+{{if .Thread.FromSlack -}}
+<div class="alert alert--info" role="note"><b class="alert__icon" aria-hidden="true">[ i ]</b><span><b class="alert__title">Moved from Slack.</b>
+{{if .Thread.SlackChannelName}}This thread started in #{{.Thread.SlackChannelName}}.{{else}}This thread started in Slack.{{end}}
+{{if .Thread.SlackRemaining}}{{plural .Thread.SlackRemaining "more reply" "more replies"}} stayed in the Slack thread.{{end}}
+{{if .Thread.SlackPermalink}}<a href="{{.Thread.SlackPermalink}}" rel="noopener noreferrer">Open the Slack thread →</a>{{end}}</span></div>
+{{- end}}
+</div>
+</article>
+
+</main>
+{{end}}
