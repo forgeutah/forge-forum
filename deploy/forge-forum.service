@@ -1,0 +1,38 @@
+[Unit]
+Description=Forge Forum
+Documentation=https://github.com/forgeutah/forge-forum
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=forge-forum
+Group=forge-forum
+EnvironmentFile=/etc/forge-forum.env
+ExecStart=/usr/local/bin/forge-forum
+Restart=always
+RestartSec=2
+# The binary shuts down gracefully within 30s of SIGTERM.
+TimeoutStopSec=31s
+
+# systemd creates /var/lib/forge-forum owned by the service user.
+StateDirectory=forge-forum
+StateDirectoryMode=0750
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

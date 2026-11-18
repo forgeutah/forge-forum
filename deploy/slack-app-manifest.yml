@@ -1,0 +1,33 @@
+# Slack app manifest for the forum's own Slack app (separate from the
+# forge-proxy sign-in app). Create it at https://api.slack.com/apps with
+# "From a manifest", in the Forge Utah workspace. Keep the app internal
+# (not distributed) so Slack's standard rate limits apply.
+display_information:
+  name: Forge Forum
+  description: Long-form discussion for Forge Utah
+  background_color: "#0B0E13"
+features:
+  bot_user:
+    display_name: forge forum
+    always_online: true
+  shortcuts:
+    - name: Move to forum
+      type: message
+      callback_id: move_to_forum
+      description: Move this thread to the Forge Forum
+oauth_config:
+  scopes:
+    bot:
+      - commands          # the message shortcut
+      - chat:write        # announcements, link-backs, direct messages
+      - channels:history  # read a public thread being moved
+      - channels:read     # check a channel is public
+      - channels:join     # join a public channel to read its thread
+      - users:read        # names and avatars of imported authors
+      - im:write          # open direct messages
+settings:
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false
