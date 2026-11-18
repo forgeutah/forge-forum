@@ -106,6 +106,20 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /threads/new", s.handleThreadNew)
 	mux.HandleFunc("POST /threads", s.handleThreadCreate)
 	mux.HandleFunc("GET /threads/{id}", s.handleThread)
+	mux.HandleFunc("POST /threads/{id}/vote", s.handleVote(forum.PostThread))
+	mux.HandleFunc("POST /threads/{id}/replies", s.handleReplyCreate)
+	mux.HandleFunc("GET /threads/{id}/edit", s.handleThreadEdit)
+	mux.HandleFunc("POST /threads/{id}/edit", s.handleThreadUpdate)
+	mux.HandleFunc("POST /threads/{id}/delete", s.handleDelete(forum.PostThread))
+	mux.HandleFunc("POST /replies/{id}/vote", s.handleVote(forum.PostReply))
+	mux.HandleFunc("GET /replies/{id}/edit", s.handleReplyEdit)
+	mux.HandleFunc("POST /replies/{id}/edit", s.handleReplyUpdate)
+	mux.HandleFunc("POST /replies/{id}/delete", s.handleDelete(forum.PostReply))
+	mux.HandleFunc("GET /settings", s.handleSettings)
+	mux.HandleFunc("POST /settings", s.handleSettingsSave)
+	mux.HandleFunc("GET /admin/tags", s.handleAdminTags)
+	mux.HandleFunc("POST /admin/tags", s.handleAdminTagAdd)
+	mux.HandleFunc("POST /admin/tags/{slug}/toggle", s.handleAdminTagToggle)
 	mux.HandleFunc("GET /assets/{file}", s.handleAsset)
 	mux.HandleFunc("/", s.handleNotFound)
 }
@@ -115,7 +129,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 type Page struct {
 	// Title is the document title, before the site name.
 	Title string
-	// Nav names the nav link to mark current: "feed" or "".
+	// Nav names the nav link to mark current: "feed", "settings", "admin",
+	// or "".
 	Nav    string
 	Member identity.Member
 	// CSRF is the member's token for the "csrf" template.

@@ -101,37 +101,95 @@ type newThread struct {
 
 // CreateThread stores a new thread by authorID and returns its ID. It
 // returns a ValidationError when the title or body is empty or too long,
-// no tag is given, or a tag is not on the active list.
+// no tag is given, or a tag is not on the active list. The thread is
+// announced in Slack when a Notifier is set.
 func (s *Store) CreateThread(ctx context.Context, authorID int64, title, bodyMD string, tagSlugs []string) (int64, error) {
 	var id int64
+	var enqueued bool
 	err := s.db.WithWriteTx(ctx, func(tx *sql.Tx) error {
 		var err error
 		id, err = s.createThreadTx(ctx, tx, newThread{AuthorID: authorID, Title: title, BodyMD: bodyMD, TagSlugs: tagSlugs})
+		if err != nil {
+			return err
+		}
+		enqueued, err = s.enqueueAnnounceTx(ctx, tx, id)
 		return err
 	})
 	if err != nil {
 		return 0, err
 	}
+	s.wake(enqueued)
 	return id, nil
+}
+
+// validThreadText trims a title and body and checks them against the
+// limits.
+func validThreadText(title, body string) (string, string, error) {
+	title, body = strings.TrimSpace(title), strings.TrimSpace(body)
+	switch {
+	case title == "":
+		return "", "", ValidationError{Field: "title", Message: "Give the thread a title."}
+	case utf8.RuneCountInString(title) > MaxTitleLen:
+		return "", "", ValidationError{Field: "title", Message: fmt.Sprintf("Keep the title to %d characters or fewer.", MaxTitleLen)}
+	case body == "":
+		return "", "", ValidationError{Field: "body", Message: "Write a body so people have something to answer."}
+	case utf8.RuneCountInString(body) > MaxBodyLen:
+		return "", "", ValidationError{Field: "body", Message: fmt.Sprintf("Keep the body to %d characters or fewer.", MaxBodyLen)}
+	}
+	return title, body, nil
+}
+
+// EditThread replaces a thread's title, body, and tags and marks it
+// edited. Only the author may; anyone else gets ErrForbidden. A retired
+// tag the thread already carries may stay on it.
+func (s *Store) EditThread(ctx context.Context, memberID, id int64, title, bodyMD string, tagSlugs []string) error {
+	return s.db.WithWriteTx(ctx, func(tx *sql.Tx) error {
+		p, err := livePostTx(ctx, tx, PostRef{Kind: PostThread, ID: id})
+		if err != nil {
+			return err
+		}
+		if p.AuthorID != memberID {
+			return ErrForbidden
+		}
+		title, body, err := validThreadText(title, bodyMD)
+		if err != nil {
+			return err
+		}
+		tagIDs, err := resolveTagsTx(ctx, tx, tagSlugs, id)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE threads SET title = ?, body_md = ?, edited_at = ? WHERE id = ?`,
+			title, body, s.now().Unix(), id); err != nil {
+			return fmt.Errorf("edit thread: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM thread_tags WHERE thread_id = ?`, id); err != nil {
+			return fmt.Errorf("edit thread tags: %w", err)
+		}
+		return insertThreadTagsTx(ctx, tx, id, tagIDs)
+	})
+}
+
+func insertThreadTagsTx(ctx context.Context, tx *sql.Tx, threadID int64, tagIDs []int64) error {
+	for _, tagID := range tagIDs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO thread_tags (thread_id, tag_id) VALUES (?, ?)`, threadID, tagID); err != nil {
+			return fmt.Errorf("insert thread tag: %w", err)
+		}
+	}
+	return nil
 }
 
 // createThreadTx validates and inserts a thread and its tags inside the
 // caller's transaction. Anything that must commit together with the thread
 // (a notification, imported replies) belongs in the same transaction.
 func (s *Store) createThreadTx(ctx context.Context, tx *sql.Tx, in newThread) (int64, error) {
-	title := strings.TrimSpace(in.Title)
-	body := strings.TrimSpace(in.BodyMD)
-	switch {
-	case title == "":
-		return 0, ValidationError{Field: "title", Message: "Give the thread a title."}
-	case utf8.RuneCountInString(title) > MaxTitleLen:
-		return 0, ValidationError{Field: "title", Message: fmt.Sprintf("Keep the title to %d characters or fewer.", MaxTitleLen)}
-	case body == "":
-		return 0, ValidationError{Field: "body", Message: "Write a body so people have something to answer."}
-	case utf8.RuneCountInString(body) > MaxBodyLen:
-		return 0, ValidationError{Field: "body", Message: fmt.Sprintf("Keep the body to %d characters or fewer.", MaxBodyLen)}
+	title, body, err := validThreadText(in.Title, in.BodyMD)
+	if err != nil {
+		return 0, err
 	}
-	tagIDs, err := resolveTagsTx(ctx, tx, in.TagSlugs)
+	tagIDs, err := resolveTagsTx(ctx, tx, in.TagSlugs, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -155,11 +213,8 @@ func (s *Store) createThreadTx(ctx context.Context, tx *sql.Tx, in newThread) (i
 	if err != nil {
 		return 0, fmt.Errorf("insert thread: %w", err)
 	}
-	for _, tagID := range tagIDs {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO thread_tags (thread_id, tag_id) VALUES (?, ?)`, id, tagID); err != nil {
-			return 0, fmt.Errorf("insert thread tag: %w", err)
-		}
+	if err := insertThreadTagsTx(ctx, tx, id, tagIDs); err != nil {
+		return 0, err
 	}
 	return id, nil
 }

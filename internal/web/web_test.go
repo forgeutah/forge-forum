@@ -366,7 +366,7 @@ func TestServer_Feed_ActivityAndUpvoteOrder(t *testing.T) {
 	a.exec(`UPDATE threads SET score = 3 WHERE title = 'Thread Alpha'`)
 	body = a.get(sam, "/?sort=top").Body.String()
 	wantOrder(t, body, rows, "Thread Bravo", "Thread Alpha", "Thread Charlie")
-	wantContains(t, body, `aria-label="7 upvotes"`, `aria-label="3 upvotes"`, `aria-label="0 upvotes"`)
+	wantContains(t, body, `aria-label="Upvote, 7 upvotes"`, `aria-label="Upvote, 3 upvotes"`, `aria-label="Upvote, 0 upvotes"`)
 
 	// An unknown sort value falls back to recent activity.
 	wantOrder(t, a.get(sam, "/?sort=bogus").Body.String(), rows, "Thread Alpha", "Thread Charlie", "Thread Bravo")
@@ -545,8 +545,9 @@ func TestServer_Assets_Served(t *testing.T) {
 func TestServer_Nav_ShowsMemberAndLinks(t *testing.T) {
 	a := newApp(t)
 	body := a.get(sam, "/").Body.String()
-	wantContains(t, body, `aria-label="Signed in as Sam R"`, ">SR<", `href="/threads/new"`, "New thread", `href="/#tags"`, "forum")
-	wantNotContains(t, body, "sign out")
+	wantContains(t, body, `aria-label="Signed in as Sam R"`, ">SR<", `href="/threads/new"`, "New thread", `href="/#tags"`, "forum",
+		`href="/settings"`)
+	wantNotContains(t, body, "sign out", `href="/admin/tags"`)
 
 	body = a.get(priya, "/").Body.String()
 	wantContains(t, body, `src="https://avatars.example.com/priya.png"`, `alt="Signed in as Priya N"`)
@@ -651,7 +652,7 @@ func TestServer_Thread_EditedAndVoted_Shown(t *testing.T) {
 		SELECT id, 'thread', 1, 1 FROM members WHERE slack_user_id = 'U0PRIYA'`)
 
 	body := a.get(priya, loc).Body.String()
-	wantContains(t, body, "edited <time", "vote--on", `aria-label="1 upvote"`)
+	wantContains(t, body, "edited <time", "vote--on", `aria-pressed="true" aria-label="Remove your upvote, 1 upvote"`)
 	wantNotContains(t, a.get(sam, loc).Body.String(), "vote--on")
 	wantContains(t, a.get(priya, "/").Body.String(), "vote--on")
 }

@@ -4,8 +4,7 @@
 <a class="back-link" href="/">← back to feed</a>
 
 <article class="thread">
-{{/* Read-only for now: this box becomes the upvote button. */ -}}
-<div class="vote vote--lg{{if .Thread.Voted}} vote--on{{end}}" role="img" aria-label="{{plural .Thread.Score "upvote" "upvotes"}}"><span aria-hidden="true">▲</span><span aria-hidden="true">{{.Thread.Score}}</span></div>
+{{template "vote" .Vote}}
 <div class="thread__body">
 <h1 class="page-title">{{.Thread.Title}}</h1>
 <div class="byline">
@@ -22,12 +21,114 @@
 <div class="prose">{{.Body}}</div>
 {{if .Thread.FromSlack -}}
 <div class="alert alert--info" role="note"><b class="alert__icon" aria-hidden="true">[ i ]</b><span><b class="alert__title">Moved from Slack.</b>
-{{if .Thread.SlackChannelName}}This thread started in #{{.Thread.SlackChannelName}}.{{else}}This thread started in Slack.{{end}}
+{{if .Counts.Imported -}}
+{{plural .Counts.Imported "direct reply was" "direct replies were"}} imported from {{if .Thread.SlackChannelName}}#{{.Thread.SlackChannelName}}{{else}}Slack{{end}}.
+{{- else if .Thread.SlackChannelName -}}
+This thread started in #{{.Thread.SlackChannelName}}.
+{{- else -}}
+This thread started in Slack.
+{{- end}}
 {{if .Thread.SlackRemaining}}{{plural .Thread.SlackRemaining "more reply" "more replies"}} stayed in the Slack thread.{{end}}
 {{if .Thread.SlackPermalink}}<a href="{{.Thread.SlackPermalink}}" rel="noopener noreferrer">Open the Slack thread →</a>{{end}}</span></div>
+{{- end}}
+{{if or .Mine .CanRemove -}}
+<div class="post-actions">
+{{if .Mine}}<a class="action-link" href="/threads/{{.Thread.ID}}/edit">edit</a>{{end}}
+<details class="disclosure">
+<summary>{{if .Mine}}delete{{else}}remove{{end}}</summary>
+<form class="confirm" method="post" action="/threads/{{.Thread.ID}}/delete">
+{{template "csrf" .}}
+<span>{{if .Mine}}Delete this thread? It leaves the feed, along with its replies.{{else}}Remove this thread as a moderator? It leaves the feed, along with its replies.{{end}}</span>
+<button class="btn btn--secondary" type="submit">{{if .Mine}}Delete thread{{else}}Remove thread{{end}}</button>
+</form>
+</details>
+</div>
 {{- end}}
 </div>
 </article>
 
+<div class="replies-bar" id="replies">
+<h2 class="fu-label replies-bar__count">{{if .Counts.Live}}{{plural .Counts.Live "reply" "replies"}}{{else}}no replies yet{{end}}</h2>
+<span class="meta">sorted by upvotes at each level</span>
+</div>
+
+{{range .Replies -}}
+<section class="reply-card{{if .N.Deleted}} reply-card--deleted{{end}}" aria-label="{{if .N.Deleted}}Deleted reply{{else}}Reply from {{.N.AuthorName}}{{end}}">
+{{template "reply" .}}
+</section>
+{{end}}
+
+<section class="composer" aria-label="Write a reply">
+<form class="reply-form" method="post" action="/threads/{{.Thread.ID}}/replies">
+{{template "csrf" .}}
+{{template "form-error" .Draft.Error}}
+<div class="field">
+<label for="reply-body">Reply to the thread</label>
+<textarea id="reply-body" name="body" rows="5" required placeholder="Share what you've seen. Markdown and code blocks work."{{if .Draft.Error}} aria-invalid="true" aria-describedby="form-error"{{end}}>{{.Draft.Body}}</textarea>
+</div>
+<div class="composer__foot">
+<span class="meta">{{if .NotifiesAuthor}}@{{.Thread.AuthorName}} gets a Slack message when you reply, unless they turned those off.{{end}}</span>
+<button class="btn btn--primary btn--lg" type="submit">Post reply</button>
+</div>
+</form>
+</section>
+
 </main>
+{{end}}
+
+{{- /* reply renders one reply and, under it, its children. It takes a
+       replyView and calls itself for each child. */ -}}
+{{define "reply"}}
+<div class="reply" id="reply-{{.N.ID}}">
+{{if .N.Deleted -}}
+<p class="reply__placeholder">{{if .N.Removed}}[ reply removed by a moderator ]{{else}}[ reply deleted by its author ]{{end}}</p>
+{{- else -}}
+<div class="byline">
+{{if .N.AuthorAvatar -}}
+<img class="avatar avatar--sm" src="{{.N.AuthorAvatar}}" alt="" width="24" height="24" referrerpolicy="no-referrer">
+{{- else -}}
+<span class="avatar avatar--sm" aria-hidden="true">{{initials .N.AuthorName}}</span>
+{{- end}}
+<span class="byline__name">@{{.N.AuthorName}}</span>
+{{if .ByThreadAuthor}}<span class="badge">author</span>{{end}}
+<time datetime="{{isotime .N.CreatedAt}}">{{reltime .N.CreatedAt}}</time>
+{{if .N.Imported}}<span class="badge badge--info">imported from slack</span>{{end}}
+{{if .N.EditedAt}}<span>· edited</span>{{end}}
+{{if .ReplyingTo}}<span>· replying to {{.ReplyingTo}}</span>{{end}}
+</div>
+<div class="prose">{{.Body}}</div>
+<div class="post-actions">
+{{template "vote" .Vote}}
+<details class="disclosure"{{if .Draft.Error}} open{{end}}>
+<summary>reply</summary>
+<form class="reply-form" method="post" action="/threads/{{.ThreadID}}/replies">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<input type="hidden" name="parent" value="{{.N.ID}}">
+{{template "form-error" .Draft.Error}}
+<div class="field">
+<label for="reply-body-{{.N.ID}}">Reply to @{{.N.AuthorName}}</label>
+<textarea id="reply-body-{{.N.ID}}" name="body" rows="4" required placeholder="Markdown and code blocks work."{{if .Draft.Error}} aria-invalid="true" aria-describedby="form-error"{{end}}>{{.Draft.Body}}</textarea>
+</div>
+<div><button class="btn btn--primary" type="submit">Post reply</button></div>
+</form>
+</details>
+{{if .Mine}}<a class="action-link" href="/replies/{{.N.ID}}/edit">edit</a>{{end}}
+{{if or .Mine .CanRemove -}}
+<details class="disclosure">
+<summary>{{if .Mine}}delete{{else}}remove{{end}}</summary>
+<form class="confirm" method="post" action="/replies/{{.N.ID}}/delete">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<span>{{if .Mine}}Delete this reply? Replies under it stay.{{else}}Remove this reply as a moderator? Replies under it stay.{{end}}</span>
+<button class="btn btn--secondary" type="submit">{{if .Mine}}Delete reply{{else}}Remove reply{{end}}</button>
+</form>
+</details>
+{{- end}}
+</div>
+{{- end}}
+{{if .Children -}}
+<div class="reply-children{{if .FlatChildren}} reply-children--flat{{end}}">
+{{range .Children}}{{template "reply" .}}{{end}}
+</div>
+{{- end}}
+</div>
 {{end}}

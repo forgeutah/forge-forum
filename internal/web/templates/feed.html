@@ -24,9 +24,8 @@
 {{if .Threads -}}
 <div class="thread-list">
 {{range .Threads}}
-<article class="thread-row">
-{{/* Read-only for now: this box becomes the upvote button. */ -}}
-<div class="vote{{if .Voted}} vote--on{{end}}" role="img" aria-label="{{plural .Score "upvote" "upvotes"}}"><span aria-hidden="true">▲</span><span aria-hidden="true">{{.Score}}</span></div>
+<article class="thread-row" id="thread-{{.ID}}">
+{{template "vote" .Vote}}
 <div class="thread-row__body">
 <h2 class="thread-row__title"><a href="{{.URL}}">{{.Title}}</a></h2>
 <div class="tag-row">

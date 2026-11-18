@@ -1,5 +1,5 @@
-// Package forum holds the forum's content: threads, tags, and (in later
-// files) replies and votes.
+// Package forum holds the forum's content: threads, tags, replies, and
+// votes, and decides who may change them.
 //
 // Reads go to the database's reader pool. Every write runs inside
 // db.WithWriteTx, and the work is done by helpers that take the *sql.Tx so
@@ -14,8 +14,18 @@ import (
 	"github.com/forgeutah/forge-forum/internal/db"
 )
 
-// ErrNotFound is returned when a thread or reply does not exist.
+// ErrNotFound is returned when a thread, reply, tag, or member does not
+// exist.
 var ErrNotFound = errors.New("forum: not found")
+
+// ErrDeleted is returned when an action targets a post that was deleted
+// or removed, or one inside a deleted thread.
+var ErrDeleted = errors.New("forum: post was deleted")
+
+// ErrForbidden is returned when the acting member may not do what they
+// asked: changing someone else's post, or an admin action without the
+// admin role.
+var ErrForbidden = errors.New("forum: not allowed")
 
 // ValidationError reports input a member can fix. Message is written for
 // the member and is safe to show on the form; Field names the input
@@ -29,8 +39,9 @@ func (e ValidationError) Error() string { return e.Message }
 
 // Store reads and writes forum content.
 type Store struct {
-	db  *db.DB
-	now func() time.Time
+	db       *db.DB
+	now      func() time.Time
+	notifier Notifier
 }
 
 // NewStore returns a Store over database. now is the clock; pass time.Now

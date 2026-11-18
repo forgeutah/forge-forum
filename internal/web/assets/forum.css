@@ -67,7 +67,8 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
 }
 .nav .nav__links a[aria-current="page"] { color: var(--accent-hover); border-bottom-color: var(--accent); }
 .nav__spacer { flex: 1 1 0; }
-.nav__signout { display: inline-flex; align-items: center; min-height: 44px; }
+.nav__action { display: inline-flex; align-items: center; min-height: 44px; }
+.nav .nav__action[aria-current="page"] { color: var(--accent-hover); }
 
 .avatar {
   flex: none;
@@ -213,6 +214,7 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
   background: rgba(103, 232, 249, 0.06);
   color: var(--term-cyan);
 }
+.badge--muted { border-color: var(--border-strong); background: var(--bg-raised); color: var(--fg-muted); }
 .tag-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* A tag you can press: the 44px target wraps the small pill. */
@@ -317,6 +319,18 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
   font-weight: 700;
 }
 .vote--lg { width: 56px; min-height: 64px; font-size: 15px; }
+/* The upvote box is a submit button inside its own small form. */
+.vote-form { flex: none; align-self: flex-start; margin: 0; }
+button.vote { padding: 0; cursor: pointer; transition: all 120ms; }
+button.vote:hover { border-color: var(--border-strong); color: var(--fg-max); }
+.vote--inline {
+  width: auto;
+  min-height: 44px;
+  flex-direction: row;
+  gap: 8px;
+  font-size: 12px;
+}
+button.vote--inline { padding: 0 12px; }
 .vote--on {
   border-color: rgba(192, 64, 88, 0.5);
   box-shadow: var(--glow-flame-sm);
@@ -357,6 +371,92 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
   color: var(--fg-muted);
 }
 .byline__name { color: var(--fg-strong); font-weight: 600; font-size: 13px; }
+
+.replies-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  scroll-margin-top: 16px;
+}
+.replies-bar__count { margin: 0; color: var(--fg-strong); }
+
+/* A top-level reply is a card; replies under it nest inside the card. */
+.reply-card {
+  padding: 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.reply-card--deleted { border-style: dashed; border-color: var(--border-strong); box-shadow: none; }
+.reply { display: flex; flex-direction: column; gap: 12px; min-width: 0; scroll-margin-top: 16px; }
+.reply:target > .byline .byline__name { color: var(--accent-hover); }
+.reply__placeholder { margin: 0; font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); }
+.reply-children {
+  margin-left: 12px;
+  padding-left: 20px;
+  border-left: 1px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+/* Past a few levels replies stop moving right; the byline names who
+   each one answers instead. */
+.reply-children--flat { margin-left: 0; padding-left: 0; border-left: 0; }
+
+/* The row under a post: upvote, reply, edit, delete. */
+.post-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.action-link,
+.disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.disclosure > summary::-webkit-details-marker { display: none; }
+.action-link:hover,
+.disclosure > summary:hover { color: var(--fg-max); text-decoration: none; }
+.disclosure[open] > summary { color: var(--fg-max); }
+/* An open disclosure takes the row below the buttons to itself. */
+.disclosure[open] { order: 1; flex: 1 1 100%; min-width: 0; }
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-canvas);
+  color: var(--fg-strong);
+  font-size: 13px;
+}
+.reply-form { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.disclosure .reply-form { padding: 4px 0 8px; }
+.composer { padding-top: 24px; border-top: 1px solid var(--border); }
+.composer__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 
 /* Rendered Markdown. */
 .prose { font-size: 15px; line-height: 1.7; color: var(--fg); overflow-wrap: anywhere; }
@@ -464,6 +564,29 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
 .tag-picker legend { padding: 0; margin-bottom: 4px; font-size: 10px; }
 .tag-picker__choices { display: flex; flex-wrap: wrap; gap: 0 8px; }
 
+.form--tight { gap: 12px; }
+.check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  font-size: 15px;
+  color: var(--fg-strong);
+  cursor: pointer;
+}
+.check input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+
+.tag-admin { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.tag-admin__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.tag-admin__toggle { margin: 0 0 0 auto; }
+
 .form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -481,6 +604,10 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
   .thread-row { gap: 12px; padding: 14px; }
   .thread { gap: 12px; }
   .vote--lg { width: 48px; min-height: 56px; font-size: 13px; }
+  .reply-card { padding: 14px; }
+  .reply-children { margin-left: 2px; padding-left: 12px; }
+  .reply-children--flat { margin-left: 0; padding-left: 0; }
+  .composer__foot .btn { width: 100%; }
   .segmented { width: 100%; }
   .segmented a { flex: 1 1 0; justify-content: center; }
 }

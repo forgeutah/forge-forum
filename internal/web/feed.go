@@ -22,7 +22,8 @@ type tagLink struct {
 
 type threadRow struct {
 	forum.Thread
-	URL string
+	URL  string
+	Vote voteView
 }
 
 type feedView struct {
@@ -104,8 +105,13 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	for _, slug := range active {
 		view.Tags = append(view.Tags, tagLink{Slug: slug, URL: feedURL(slug, top, 1), Active: slug == tag})
 	}
+	here := feedURL(tag, top, page)
 	for _, t := range threads {
-		view.Threads = append(view.Threads, threadRow{Thread: t, URL: threadURL(t.ID)})
+		row := threadRow{Thread: t, URL: threadURL(t.ID)}
+		row.Vote = s.voteView(member(r), row.URL+"/vote", "vote", t.Score, t.Voted)
+		// Voting from the feed comes back to the same page, at the same row.
+		row.Vote.Return = here + "#thread-" + strconv.FormatInt(t.ID, 10)
+		view.Threads = append(view.Threads, row)
 	}
 	if page > 1 {
 		view.NewerURL = feedURL(tag, top, page-1)

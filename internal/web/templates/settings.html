@@ -1,0 +1,31 @@
+{{define "main"}}
+<main id="main" class="main main--form">
+
+<header class="page-head">
+<div class="fu-eyebrow eyebrow">&gt; settings</div>
+<h1 class="page-title">Settings</h1>
+<p class="page-sub">Signed in as {{.Member.Name}}. Your name and picture come from Slack.</p>
+</header>
+
+{{if .Saved -}}
+<div class="alert alert--info" role="status"><b class="alert__icon" aria-hidden="true">[ ✓ ]</b><span>Saved.</span></div>
+{{- end}}
+
+{{if .SlackOn -}}
+<form class="form" method="post" action="/settings">
+{{template "csrf" .}}
+<fieldset class="tag-picker">
+<legend class="fu-label">Slack messages</legend>
+<label class="check"><input type="checkbox" name="dm_replies" value="1"{{if .DMReplies}} checked{{end}}><span>Send me a Slack message when someone replies to me</span></label>
+<span class="hint">The message links to the reply. You are never messaged about your own replies.</span>
+</fieldset>
+<div class="form__actions">
+<button class="btn btn--primary btn--lg" type="submit">Save settings</button>
+</div>
+</form>
+{{- else -}}
+<div class="alert alert--info" role="note"><b class="alert__icon" aria-hidden="true">[ i ]</b><span><b class="alert__title">Slack is not connected.</b> This forum is not sending Slack messages right now, so there is nothing to set here yet.</span></div>
+{{- end}}
+
+</main>
+{{end}}

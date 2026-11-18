@@ -1,0 +1,46 @@
+{{define "main"}}
+<main id="main" class="main main--form">
+
+<header class="page-head">
+<div class="fu-eyebrow eyebrow">&gt; {{if .IsThread}}edit thread{{else}}edit reply{{end}}</div>
+<h1 class="page-title">{{if .IsThread}}Edit your thread{{else}}Edit your reply{{end}}</h1>
+<p class="page-sub">Saving marks the post as edited.</p>
+</header>
+
+<form class="form" method="post" action="{{.Action}}">
+{{template "csrf" .}}
+
+{{template "form-error" .Error}}
+
+{{if .IsThread -}}
+<div class="field">
+<label for="title">Title</label>
+<input id="title" name="title" type="text" required maxlength="{{.MaxTitleLen}}" autocomplete="off" value="{{.TitleValue}}"{{if eq .ErrorField "title"}} aria-invalid="true" aria-describedby="form-error"{{end}}>
+</div>
+{{- end}}
+
+<div class="field">
+<label for="body">Body</label>
+<textarea id="body" name="body" rows="10" required aria-describedby="body-hint{{if eq .ErrorField "body"}} form-error{{end}}"{{if eq .ErrorField "body"}} aria-invalid="true"{{end}}>{{.BodyValue}}</textarea>
+<span id="body-hint" class="hint">Markdown works. Fence code with three backticks.</span>
+</div>
+
+{{if .IsThread -}}
+<fieldset class="tag-picker"{{if eq .ErrorField "tags"}} aria-describedby="form-error"{{end}}>
+<legend class="fu-label">Tags · pick one or more</legend>
+<div class="tag-picker__choices">
+{{range .Tags -}}
+<label class="tag-choice"><input type="checkbox" name="tags" value="{{.Slug}}"{{if .Checked}} checked{{end}}><span class="tag">#{{.Slug}}</span></label>
+{{end -}}
+</div>
+</fieldset>
+{{- end}}
+
+<div class="form__actions">
+<button class="btn btn--primary btn--lg" type="submit">Save changes</button>
+<a class="btn btn--ghost btn--lg" href="{{.CancelURL}}">Cancel</a>
+</div>
+</form>
+
+</main>
+{{end}}

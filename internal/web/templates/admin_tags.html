@@ -1,0 +1,36 @@
+{{define "main"}}
+<main id="main" class="main main--form">
+
+<header class="page-head">
+<div class="fu-eyebrow eyebrow">&gt; admin</div>
+<h1 class="page-title">Manage tags</h1>
+<p class="page-sub">Members pick from the active tags. A retired tag stays on the threads that have it but cannot be picked or filtered by.</p>
+</header>
+
+<form class="form form--tight" method="post" action="/admin/tags">
+{{template "csrf" .}}
+{{template "form-error" .Error}}
+<div class="field">
+<label for="slug">New tag</label>
+<input id="slug" name="slug" type="text" required maxlength="33" autocomplete="off" autocapitalize="none" placeholder="observability" value="{{.SlugValue}}" aria-describedby="slug-hint{{if .Error}} form-error{{end}}"{{if .Error}} aria-invalid="true"{{end}}>
+<span id="slug-hint" class="hint">2 to 32 lowercase letters, digits, or hyphens.</span>
+</div>
+<div><button class="btn btn--primary" type="submit">Add tag</button></div>
+</form>
+
+<ul class="tag-admin">
+{{range .Tags -}}
+<li class="tag-admin__row">
+<span class="tag">#{{.Slug}}</span>
+{{if .Active}}<span class="badge badge--info">active</span>{{else}}<span class="badge badge--muted">retired</span>{{end}}
+<form class="tag-admin__toggle" method="post" action="/admin/tags/{{.Slug}}/toggle">
+{{template "csrf" $}}
+<input type="hidden" name="active" value="{{if .Active}}0{{else}}1{{end}}">
+<button class="btn btn--secondary" type="submit" aria-label="{{if .Active}}Retire{{else}}Restore{{end}} #{{.Slug}}">{{if .Active}}Retire{{else}}Restore{{end}}</button>
+</form>
+</li>
+{{end -}}
+</ul>
+
+</main>
+{{end}}
