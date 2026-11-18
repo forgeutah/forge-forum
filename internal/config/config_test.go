@@ -29,7 +29,7 @@ func TestLoad_RequiredValues_Loads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.ListenAddr != ":8080" || c.AdminRole != "admin" || c.ClassifierModel != "claude-haiku-5-5" {
+	if c.ListenAddr != ":8080" || c.AdminRole != "admin" || c.ClassifierModel != "claude-sonnet-5-5" {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
 	if c.PublicBaseURL != "https://forum.example.test" {

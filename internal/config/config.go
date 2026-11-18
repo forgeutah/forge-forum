@@ -83,7 +83,7 @@ func Load(getenv func(string) string) (Config, error) {
 		ForgeBotToken:        get("FORGE_BOT_TOKEN", ""),
 		SlackAnnounceChannel: get("SLACK_ANNOUNCE_CHANNEL", ""),
 		AnthropicAPIKey:      get("ANTHROPIC_API_KEY", ""),
-		ClassifierModel:      get("CLASSIFIER_MODEL", "claude-haiku-5-5"),
+		ClassifierModel:      get("CLASSIFIER_MODEL", "claude-sonnet-5-5"),
 	}
 
 	var errs []error

@@ -72,7 +72,7 @@ func build(ctx context.Context, cfg config.Config, database *db.DB, logger *slog
 			Slack:      client,
 			Store:      store,
 			DB:         database,
-			Classifier: move.NewClaudeClassifier(cfg.AnthropicAPIKey, cfg.ClassifierModel, "", nil),
+			Classifier: move.NewClaudeClassifier(cfg.AnthropicAPIKey, cfg.ClassifierModel, "", nil, logger),
 			BaseURL:    cfg.PublicBaseURL,
 			TeamID:     cfg.SlackTeamID,
 			Logger:     logger,

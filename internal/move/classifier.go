@@ -12,8 +12,9 @@ type SlackMessage struct {
 // Classifier decides which replies answer the original post directly.
 type Classifier interface {
 	// Classify returns the set of reply IDs that are direct responses to original.
-	// Every returned ID is one of replies[i].ID. A reply the classifier is unsure
-	// about, or omits, is NOT direct (it stays in Slack — plan R17, KTD8).
+	// Every returned ID is one of replies[i].ID. A reply that responds to another
+	// reply is NOT direct (it stays in Slack — plan R17, KTD8). A classifier that
+	// cannot place every reply returns an error instead of leaving replies out.
 	//
 	// The map holds only direct replies, each with the value true, and is
 	// non-nil whenever the error is nil.

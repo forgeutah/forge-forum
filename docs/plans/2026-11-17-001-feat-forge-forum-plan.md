@@ -211,7 +211,7 @@ Product Contract preservation: changed: R14, R11 — the two questions deferred 
 - KTD5. **The forum reaches Slack through forge-bot.** forge-proxy passes nothing without a session, so Slack cannot call a forum URL, and the workspace uses one Slack app for all Forge services. forge-bot, a separate service, therefore holds the Socket Mode connection and the bot token; the forum holds no Slack token. The bot posts the interactions the forum owns (the "Move to forum" shortcut and its dialog) to `POST /internal/slack/interactions`, an endpoint outside the proxy contract whose only gate is the forum's service token as a bearer token, compared in constant time. The forum calls Slack's Web API at the bot's `/slack/api/<method>` with the same token, using `github.com/slack-go/slack` behind an in-repo interface so tests use a fake. Both directions run over the Forge tailnet and follow forge-bot's service contract. With the bot's URL and token unset the forum runs with Slack features off and logs that once. Serves R11, R12, R14–R20.
 - KTD6. **Notifications go through an outbox table.** The row is written in the same transaction as the post, and a background worker delivers it with bounded retries. A Slack outage therefore never fails a post or loses a notification silently. Serves R11, R12, R18.
 - KTD7. **A move is one background job and one database transaction.** The shortcut handler only validates and opens the dialog. After submission the job reads the Slack thread, classifies replies, and writes the thread and its imported replies together; a unique key on Slack channel and thread timestamp makes a second move return the existing thread. If reading or classifying fails, nothing is imported and the mover is told in Slack. Serves R14–R20.
-- KTD8. **Reply classification uses Claude Haiku 5.5 with a JSON schema output.** The Anthropic Go SDK's structured output returns one verdict per Slack message ID. Slack text is passed as delimited untrusted data, the model has no tools, and the forum rejects any ID it did not send. A reply the model does not mark as direct stays in Slack, which is the safe side of R17. The model ID is a setting.
+- KTD8. **Reply classification asks Claude which message each reply responds to.** Slack shows a thread as a flat list, so the forum sends the original post and the replies and asks, through the Anthropic Go SDK's JSON schema output, for the ID of the one message each reply responds to; the schema allows only the IDs that were sent. A reply is imported when that message is the original post, and every other reply stays in Slack (R17). The default model is Claude Sonnet 5.5 at medium effort, because it placed the replies of a real 73-reply thread correctly where asking for a yes or no on each reply did not. Every reply must get an answer: the forum asks once more when an answer leaves replies out, and if the second answer is also incomplete the move fails, nothing is imported, and the mover is told. Slack text is passed as delimited untrusted data, the model has no tools, and the forum rejects any ID it did not send. The classifier logs the model, the number of replies sent, the number judged direct, and whether it asked twice, never message text. The model ID is a setting.
 - KTD9. **Replies are an adjacency list ordered in Go.** One query loads a thread's replies; the tree is built in memory and siblings sorted by score then age. Scores are a cached column updated in the same transaction as the vote row. Serves R7, R8, R9.
 - KTD10. **Deployment is a static binary under systemd on an exe.dev VM.** Config comes from a root-owned env file, data lives under `/var/lib/forge-forum`, and the VM joins the Forge tailnet so forge-proxy and forge-bot can reach port 8080 and the forum can reach forge-bot. Litestream replication is documented as an optional sidecar, matching forge-proxy.
 - KTD11. **Post bodies are stored as Markdown and rendered with goldmark, then sanitized.** Raw HTML is disabled and output passes through bluemonday. Imported Slack text is converted from mrkdwn by an in-repo converter because no maintained Go library does that direction. Serves R5, R15, R16.
@@ -253,8 +253,8 @@ sequenceDiagram
   F-->>G: field errors, or none
   G->>S: ack with that answer
   F->>S: read thread replies
-  F->>C: classify replies as direct or not
-  C-->>F: verdict per message
+  F->>C: which message does each reply respond to
+  C-->>F: one target per reply
   F->>F: one transaction: thread + imported replies
   F->>S: post forum link into the Slack thread
 ```
@@ -411,14 +411,16 @@ deploy/                 forge-forum.service, env example, runbook
 
 **Files:** `internal/markdown/slack.go`, `internal/markdown/slack_test.go`, `internal/move/classifier.go`, `internal/move/claude.go`, `internal/move/classifier_test.go`
 
-**Approach:** The converter tokenizes code first, then rewrites mentions, channel links, URLs, emphasis, and the three escaped entities; mentions resolve through a lookup function. The classifier interface takes the original post and replies and returns a verdict per message ID; the Claude implementation follows KTD8.
+**Approach:** The converter tokenizes code first, then rewrites mentions, channel links, URLs, emphasis, and the three escaped entities; mentions resolve through a lookup function. The classifier interface takes the original post and replies and returns the IDs of the replies that respond to the original post; the Claude implementation follows KTD8.
 
 **Test scenarios:**
 - A user mention becomes the member's display name; a labelled link becomes a Markdown link; bold and strike convert.
 - Text inside inline code and fenced code is left untouched.
 - Escaped angle brackets and ampersands are unescaped once.
 - The Claude classifier, given a canned response naming an ID that was not sent, returns an error.
-- A canned response omitting a sent ID treats that reply as not direct.
+- A canned response naming a target that was not sent returns an error.
+- A reply whose target is the original post is direct; one whose target is another reply, itself, or a later reply is not.
+- A canned response omitting sent IDs is asked for once more; a complete second answer succeeds, and a second incomplete answer returns an error that says how many replies went unanswered.
 - A reply whose text says to ignore instructions is passed as data and the request carries no tools.
 
 **Verification:** Converter and classifier are usable by the move job with no Slack or network access in tests.
