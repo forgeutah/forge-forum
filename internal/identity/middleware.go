@@ -2,7 +2,6 @@ package identity
 
 import (
 	"crypto/subtle"
-	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -30,8 +29,12 @@ const (
 	maxNameRunes    = 120
 )
 
+// now is the clock the middleware reads; tests replace it.
+var now = time.Now
+
 // Middleware enforces the forge-proxy upstream contract (plan KTD4) and
-// upserts the member. A request that fails any check gets a bare 401; the
+// records the member, writing only when something changed or last_seen_at
+// is over a minute old. A request that fails any check gets a bare 401; the
 // wrapped handler never runs, so no forum content can leak.
 //
 // X-Forge-Email is deliberately ignored: the forum neither stores nor logs
@@ -61,11 +64,7 @@ func Middleware(cfg config.Config, database *db.DB, logger *slog.Logger) func(ht
 				m.Name = m.SlackUserID
 			}
 
-			err = database.WithWriteTx(r.Context(), func(tx *sql.Tx) error {
-				var err error
-				m, err = upsertSignedIn(r.Context(), tx, m, forgeUserID, time.Now())
-				return err
-			})
+			m, err = signIn(r.Context(), database, m, forgeUserID, now())
 			if err != nil {
 				logger.Error("member upsert failed", "error", err)
 				http.Error(w, "Something went wrong on our side. Try again in a moment.", http.StatusInternalServerError)

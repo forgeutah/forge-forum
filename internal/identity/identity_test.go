@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/forgeutah/forge-forum/internal/config"
 	"github.com/forgeutah/forge-forum/internal/db"
@@ -171,7 +172,7 @@ func TestMiddleware_FirstAndSecondRequest_UpsertOneMember(t *testing.T) {
 		t.Fatalf("first request status = %d", w.Code)
 	}
 	if first.ID == 0 || first.Name != "Sam R" || first.SlackUserID != "U0SAM" ||
-		first.AvatarURL != "https://avatars.example.com/sam.png" || !first.DMReplies {
+		first.AvatarURL != "https://avatars.example.com/sam.png" {
 		t.Errorf("first member = %+v", first)
 	}
 
@@ -207,7 +208,7 @@ func TestMiddleware_ImportedMemberSignsIn_GainsForgeIDKeepsPosts(t *testing.T) {
 	var importedID int64
 	err := d.WithWriteTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		importedID, err = EnsureBySlackID(ctx, tx, "U0SAM", "sam (slack)", "")
+		importedID, err = EnsureBySlackID(ctx, tx, "U0SAM", "sam (slack)", "", time.Unix(1_700_000_000, 0))
 		if err != nil {
 			return err
 		}
@@ -242,13 +243,14 @@ func TestEnsureBySlackID_ExistingMember_KeepsNameAndAvatar(t *testing.T) {
 	var seen Member
 	serve(testHandler(t, d, &seen), proxyRequest(nil))
 
+	created := time.Unix(1_700_000_000, 0)
 	var id, newID int64
 	err := d.WithWriteTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		if id, err = EnsureBySlackID(ctx, tx, "U0SAM", "other name", "https://x.example/a.png"); err != nil {
+		if id, err = EnsureBySlackID(ctx, tx, "U0SAM", "other name", "https://x.example/a.png", created); err != nil {
 			return err
 		}
-		newID, err = EnsureBySlackID(ctx, tx, "U0NEW", "New Person", "https://x.example/n.png")
+		newID, err = EnsureBySlackID(ctx, tx, "U0NEW", "New Person", "https://x.example/n.png", created)
 		return err
 	})
 	if err != nil {
@@ -262,13 +264,17 @@ func TestEnsureBySlackID_ExistingMember_KeepsNameAndAvatar(t *testing.T) {
 	}
 	var name, avatar string
 	var forgeID sql.NullInt64
+	var createdAt int64
 	d.Reader().QueryRow(`SELECT name, avatar_url FROM members WHERE id = ?`, id).Scan(&name, &avatar)
 	if name != "Sam R" || avatar != "https://avatars.example.com/sam.png" {
 		t.Errorf("existing member overwritten: %q %q", name, avatar)
 	}
-	d.Reader().QueryRow(`SELECT name, forge_user_id FROM members WHERE id = ?`, newID).Scan(&name, &forgeID)
+	d.Reader().QueryRow(`SELECT name, forge_user_id, created_at FROM members WHERE id = ?`, newID).Scan(&name, &forgeID, &createdAt)
 	if name != "New Person" || forgeID.Valid {
 		t.Errorf("new member = %q forge_user_id = %v, want New Person and NULL", name, forgeID)
+	}
+	if createdAt != created.Unix() {
+		t.Errorf("new member created_at = %d, want the passed clock %d", createdAt, created.Unix())
 	}
 }
 
@@ -346,5 +352,192 @@ func TestWithMember_RoundTrip(t *testing.T) {
 	m, ok := FromContext(WithMember(context.Background(), Member{ID: 7, Name: "x"}))
 	if !ok || m.ID != 7 {
 		t.Errorf("FromContext = %+v, %v", m, ok)
+	}
+}
+
+// setClock makes the middleware read a clock the test controls and
+// returns the function that moves it forward.
+func setClock(t *testing.T, start time.Time) (advance func(time.Duration)) {
+	t.Helper()
+	current, real := start, now
+	now = func() time.Time { return current }
+	t.Cleanup(func() { now = real })
+	return func(d time.Duration) { current = current.Add(d) }
+}
+
+// storedMember is the members row for U0SAM as the database holds it.
+type storedMember struct {
+	ID       int64
+	ForgeID  sql.NullInt64
+	Name     string
+	Avatar   string
+	LastSeen sql.NullInt64
+}
+
+func readSam(t *testing.T, d *db.DB) storedMember {
+	t.Helper()
+	var s storedMember
+	err := d.Reader().QueryRow(`
+		SELECT id, forge_user_id, name, avatar_url, last_seen_at FROM members WHERE slack_user_id = 'U0SAM'`).
+		Scan(&s.ID, &s.ForgeID, &s.Name, &s.Avatar, &s.LastSeen)
+	if err != nil {
+		t.Fatalf("read member: %v", err)
+	}
+	return s
+}
+
+// TestMiddleware_SecondRequestWithinWindow_WritesNothing checks that an
+// unchanged member seen under a minute ago is served without a write.
+func TestMiddleware_SecondRequestWithinWindow_WritesNothing(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	advance := setClock(t, start)
+	d := openTestDB(t)
+	var first, second Member
+	serve(testHandler(t, d, &first), proxyRequest(nil))
+	if got := readSam(t, d).LastSeen; !got.Valid || got.Int64 != start.Unix() {
+		t.Fatalf("last_seen_at after first request = %v, want %d", got, start.Unix())
+	}
+	// A write would show up here even if it left every column the
+	// middleware sets untouched.
+	var changesBefore, changesAfter int64
+	countWrites := func(n *int64) error {
+		return d.WithWriteTx(context.Background(), func(tx *sql.Tx) error {
+			return tx.QueryRow(`SELECT total_changes()`).Scan(n)
+		})
+	}
+	if err := countWrites(&changesBefore); err != nil {
+		t.Fatalf("total_changes: %v", err)
+	}
+
+	advance(59 * time.Second)
+	w := serve(testHandler(t, d, &second), proxyRequest(map[string]string{"X-Forge-Roles": "admin"}))
+	if w.Code != http.StatusOK || w.Body.String() != pageContent {
+		t.Fatalf("second request status = %d body = %q", w.Code, w.Body.String())
+	}
+	if err := countWrites(&changesAfter); err != nil {
+		t.Fatalf("total_changes: %v", err)
+	}
+	if changesAfter != changesBefore {
+		t.Errorf("second request changed %d rows, want none", changesAfter-changesBefore)
+	}
+	if got := readSam(t, d).LastSeen; got.Int64 != start.Unix() {
+		t.Errorf("last_seen_at = %d, want it left at %d", got.Int64, start.Unix())
+	}
+	want := first
+	want.IsAdmin = true
+	if second != want {
+		t.Errorf("second member = %+v, want %+v", second, want)
+	}
+	if n := countMembers(t, d); n != 1 {
+		t.Errorf("members = %d, want 1", n)
+	}
+}
+
+// TestMiddleware_ChangedProfileWithinWindow_UpdatesAtOnce checks that a
+// new name, avatar or Forge user ID is stored without waiting a minute.
+func TestMiddleware_ChangedProfileWithinWindow_UpdatesAtOnce(t *testing.T) {
+	cases := map[string]struct {
+		override map[string]string
+		want     storedMember
+	}{
+		"name": {
+			map[string]string{"X-Forge-Name": "Sam Rivera"},
+			storedMember{Name: "Sam Rivera", Avatar: "https://avatars.example.com/sam.png", ForgeID: sql.NullInt64{Int64: 42, Valid: true}},
+		},
+		"avatar": {
+			map[string]string{"X-Forge-Avatar": "https://avatars.example.com/sam2.png"},
+			storedMember{Name: "Sam R", Avatar: "https://avatars.example.com/sam2.png", ForgeID: sql.NullInt64{Int64: 42, Valid: true}},
+		},
+		"avatar removed": {
+			map[string]string{"X-Forge-Avatar": ""},
+			storedMember{Name: "Sam R", Avatar: "", ForgeID: sql.NullInt64{Int64: 42, Valid: true}},
+		},
+		"forge user id": {
+			map[string]string{"X-Forge-User-Id": "43"},
+			storedMember{Name: "Sam R", Avatar: "https://avatars.example.com/sam.png", ForgeID: sql.NullInt64{Int64: 43, Valid: true}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			start := time.Unix(1_800_000_000, 0)
+			advance := setClock(t, start)
+			d := openTestDB(t)
+			var first, second Member
+			serve(testHandler(t, d, &first), proxyRequest(nil))
+
+			advance(5 * time.Second)
+			serve(testHandler(t, d, &second), proxyRequest(tc.override))
+			got := readSam(t, d)
+			tc.want.ID = first.ID
+			tc.want.LastSeen = sql.NullInt64{Int64: start.Unix() + 5, Valid: true}
+			if got != tc.want {
+				t.Errorf("stored member = %+v, want %+v", got, tc.want)
+			}
+			if second.ID != first.ID || second.Name != tc.want.Name || second.AvatarURL != tc.want.Avatar {
+				t.Errorf("request member = %+v, want the stored row %+v", second, tc.want)
+			}
+		})
+	}
+}
+
+// TestMiddleware_RequestAfterWindow_RefreshesLastSeen checks that
+// last_seen_at moves once the stored value is a minute old.
+func TestMiddleware_RequestAfterWindow_RefreshesLastSeen(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	advance := setClock(t, start)
+	d := openTestDB(t)
+	var first, second Member
+	serve(testHandler(t, d, &first), proxyRequest(nil))
+
+	advance(60 * time.Second)
+	serve(testHandler(t, d, &second), proxyRequest(nil))
+	if got := readSam(t, d).LastSeen; got.Int64 != start.Unix()+60 {
+		t.Errorf("last_seen_at = %d, want it refreshed to %d", got.Int64, start.Unix()+60)
+	}
+	if second != first {
+		t.Errorf("second member = %+v, want %+v", second, first)
+	}
+
+	// The refresh starts a new window.
+	advance(30 * time.Second)
+	serve(testHandler(t, d, nil), proxyRequest(nil))
+	if got := readSam(t, d).LastSeen; got.Int64 != start.Unix()+60 {
+		t.Errorf("last_seen_at = %d, want it left at %d inside the new window", got.Int64, start.Unix()+60)
+	}
+}
+
+// TestMiddleware_ImportedMemberFirstSignIn_SetsForgeUserID checks that a
+// row an import created, which has no Forge user ID and was never seen,
+// is written on its owner's first request.
+func TestMiddleware_ImportedMemberFirstSignIn_SetsForgeUserID(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	setClock(t, start)
+	ctx := context.Background()
+	d := openTestDB(t)
+	var importedID int64
+	err := d.WithWriteTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		// The import already holds the name and avatar the proxy will send.
+		importedID, err = EnsureBySlackID(ctx, tx, "U0SAM", "Sam R", "https://avatars.example.com/sam.png", start)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if got := readSam(t, d); got.ForgeID.Valid || got.LastSeen.Valid {
+		t.Fatalf("imported row = %+v, want no forge_user_id and no last_seen_at", got)
+	}
+
+	var seen Member
+	serve(testHandler(t, d, &seen), proxyRequest(nil))
+	got := readSam(t, d)
+	if seen.ID != importedID || got.ID != importedID {
+		t.Errorf("member ID = %d (row %d), want the imported row %d", seen.ID, got.ID, importedID)
+	}
+	if !got.ForgeID.Valid || got.ForgeID.Int64 != 42 || got.LastSeen.Int64 != start.Unix() {
+		t.Errorf("stored member = %+v, want forge_user_id 42 and last_seen_at %d", got, start.Unix())
+	}
+	if n := countMembers(t, d); n != 1 {
+		t.Errorf("members = %d, want 1", n)
 	}
 }

@@ -14,10 +14,9 @@ type ReplyNode struct {
 	// ParentID is the reply this one answers, or 0 at the top level.
 	ParentID int64
 
-	AuthorID      int64
-	AuthorName    string
-	AuthorAvatar  string
-	AuthorSlackID string
+	AuthorID     int64
+	AuthorName   string
+	AuthorAvatar string
 
 	BodyMD string
 	Score  int
@@ -53,7 +52,7 @@ type ReplyCounts struct {
 // placeholder; one with none is left out.
 func (s *Store) ReplyTree(ctx context.Context, threadID, viewerID int64) ([]*ReplyNode, ReplyCounts, error) {
 	rows, err := s.db.Reader().QueryContext(ctx, `
-		SELECT r.id, COALESCE(r.parent_id, 0), r.author_id, m.name, m.avatar_url, m.slack_user_id,
+		SELECT r.id, COALESCE(r.parent_id, 0), r.author_id, m.name, m.avatar_url,
 			r.body_md, r.score, r.created_at, r.edited_at,
 			r.deleted_at IS NOT NULL, r.removed_by IS NOT NULL, r.imported,
 			EXISTS (SELECT 1 FROM votes v
@@ -72,7 +71,7 @@ func (s *Store) ReplyTree(ctx context.Context, threadID, viewerID int64) ([]*Rep
 		n := &ReplyNode{}
 		var created int64
 		var edited *int64
-		if err := rows.Scan(&n.ID, &n.ParentID, &n.AuthorID, &n.AuthorName, &n.AuthorAvatar, &n.AuthorSlackID,
+		if err := rows.Scan(&n.ID, &n.ParentID, &n.AuthorID, &n.AuthorName, &n.AuthorAvatar,
 			&n.BodyMD, &n.Score, &created, &edited, &n.Deleted, &n.Removed, &n.Imported, &n.Voted); err != nil {
 			return nil, ReplyCounts{}, fmt.Errorf("load replies: %w", err)
 		}

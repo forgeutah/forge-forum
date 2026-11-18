@@ -395,8 +395,8 @@ func TestClaudeClassifier_Classify_OversizeInput_Capped(t *testing.T) {
 	}
 }
 
-// TestFakeClassifier_Classify_MarksConfiguredIDs checks the fake used by
-// other packages' tests.
+// TestFakeClassifier_Classify_MarksConfiguredIDs checks the fake this
+// package's tests use.
 func TestFakeClassifier_Classify_MarksConfiguredIDs(t *testing.T) {
 	f := &FakeClassifier{Direct: map[string]bool{"100.001": true, "100.002": false, "not-sent": true}}
 	var c Classifier = f

@@ -589,3 +589,66 @@ func TestTextBuilders_CopyRules_NoExclamationMarks(t *testing.T) {
 		}
 	}
 }
+
+// cancellingClient is a Slack client whose accepted post is followed at
+// once by the worker's context being cancelled, as when shutdown lands
+// between the send and the row being marked.
+type cancellingClient struct {
+	*slackx.Fake
+	cancel context.CancelFunc
+}
+
+func (c cancellingClient) PostMessage(ctx context.Context, channel, text, threadTS string) error {
+	err := c.Fake.PostMessage(ctx, channel, text, threadTS)
+	c.cancel()
+	return err
+}
+
+// TestWorker_RunOnce_CancelledAfterSend_StillMarkedSent checks a message
+// Slack accepted is not left pending, and so sent twice, because shutdown
+// cancelled the context before the row was marked.
+func TestWorker_RunOnce_CancelledAfterSend_StillMarkedSent(t *testing.T) {
+	d, c, fake := openTest(t), newClock(), &slackx.Fake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newWorker(d, cancellingClient{Fake: fake, cancel: cancel}, c)
+	id := enqueue(t, d, c.Now(), KindMoveFailed, Message{Channel: "U1", Text: "did not work"})
+
+	// The pass may report the cancellation; what matters is the row.
+	done, _ := w.RunOnce(ctx)
+	if ctx.Err() == nil {
+		t.Fatal("the context was not cancelled during the send")
+	}
+	if done != 1 {
+		t.Errorf("RunOnce finished %d rows, want 1", done)
+	}
+	if r := getRow(t, d, id); r.Status != "sent" || r.Attempts != 1 || r.SentAt.Int64 != c.Now().Unix() {
+		t.Errorf("row = %+v, want sent after 1 attempt", r)
+	}
+
+	// After the restart nothing is left to send.
+	c.Advance(time.Hour)
+	runOnce(t, newWorker(d, fake, c), 0)
+	if n := len(fake.PostedMessages()); n != 1 {
+		t.Errorf("posted = %d, want exactly 1", n)
+	}
+}
+
+// TestWorker_RunOnce_CancelledDuringFailedSend_AttemptRecorded checks a
+// failed attempt is still written when the context ends while the worker
+// records it.
+func TestWorker_RunOnce_CancelledDuringFailedSend_AttemptRecorded(t *testing.T) {
+	d, c := openTest(t), newClock()
+	w := newWorker(d, &slackx.Fake{}, c)
+	id := enqueue(t, d, c.Now(), KindReplyDM, Message{Channel: "U1", Text: "reply"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	next := c.Now().Add(30 * time.Second)
+	if err := w.reschedule(ctx, outboxRow{id: id, kind: string(KindReplyDM)}, 1, "slack is down", next); err != nil {
+		t.Fatalf("reschedule: %v", err)
+	}
+	if r := getRow(t, d, id); r.Status != "pending" || r.Attempts != 1 || r.NextAttemptAt != next.Unix() || r.LastError != "slack is down" {
+		t.Errorf("row = %+v, want pending with 1 attempt recorded", r)
+	}
+}

@@ -32,18 +32,18 @@ var backoff = [maxAttempts - 1]time.Duration{30 * time.Second, 2 * time.Minute, 
 // permanentCodes are Slack errors that retrying cannot fix: the target
 // does not exist or cannot be written to, or the token is no good.
 var permanentCodes = map[string]bool{
-	"channel_not_found": true,
-	"not_in_channel":    true,
-	"is_archived":       true,
-	"user_not_found":    true,
-	"cannot_dm_bot":     true,
-	"msg_too_long":      true,
-	"no_text":           true,
-	"account_inactive":  true,
-	"invalid_auth":      true,
-	"not_authed":        true,
-	"token_revoked":     true,
-	"missing_scope":     true,
+	slackx.ErrChannelNotFound: true,
+	slackx.ErrNotInChannel:    true,
+	"is_archived":             true,
+	slackx.ErrUserNotFound:    true,
+	"cannot_dm_bot":           true,
+	"msg_too_long":            true,
+	"no_text":                 true,
+	"account_inactive":        true,
+	"invalid_auth":            true,
+	"not_authed":              true,
+	"token_revoked":           true,
+	"missing_scope":           true,
 }
 
 // Row statuses, matching the notifications.status CHECK constraint.
@@ -230,8 +230,11 @@ func (w *Worker) deliver(ctx context.Context, r outboxRow, now time.Time) (bool,
 	return false, w.reschedule(ctx, r, attempts, err.Error(), now.Add(wait))
 }
 
-// finish moves a row to a terminal status.
+// finish moves a row to a terminal status. The write does not stop when
+// ctx is cancelled: a message Slack has accepted must not stay pending,
+// and be sent again, because shutdown began before the row was marked.
 func (w *Worker) finish(ctx context.Context, r outboxRow, status string, attempts int, lastError string, now time.Time) error {
+	ctx = context.WithoutCancel(ctx)
 	var sentAt any
 	if status == statusSent {
 		sentAt = now.Unix()
@@ -257,8 +260,10 @@ func (w *Worker) finish(ctx context.Context, r outboxRow, status string, attempt
 	return nil
 }
 
-// reschedule records a failed attempt and when to try again.
+// reschedule records a failed attempt and when to try again. Like finish,
+// it writes even when ctx is cancelled, so the attempt is not lost.
 func (w *Worker) reschedule(ctx context.Context, r outboxRow, attempts int, lastError string, next time.Time) error {
+	ctx = context.WithoutCancel(ctx)
 	lastError = capError(lastError)
 	err := w.db.WithWriteTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,

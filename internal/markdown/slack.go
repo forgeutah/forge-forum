@@ -14,6 +14,10 @@ type SlackResolver interface {
 	UserName(userID string) string
 }
 
+// UnescapeSlack turns the three HTML entities Slack escapes in message
+// text (&amp;, &lt;, &gt;) back into their characters.
+func UnescapeSlack(s string) string { return slackUnescape.Replace(s) }
+
 // Converted pieces (code, mentions, links) are swapped for placeholders
 // while emphasis and entities are rewritten, so that neither pass can
 // touch them. A placeholder is holdOpen, the piece's index, holdClose.

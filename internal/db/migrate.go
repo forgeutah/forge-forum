@@ -58,22 +58,3 @@ func migrate(ctx context.Context, writer *sql.DB) error {
 	}
 	return nil
 }
-
-// AppliedMigrations returns the names of applied migrations, for tests
-// and diagnostics.
-func (d *DB) AppliedMigrations(ctx context.Context) ([]string, error) {
-	rows, err := d.reader.QueryContext(ctx, `SELECT name FROM schema_migrations ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
-}

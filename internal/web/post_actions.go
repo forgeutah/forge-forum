@@ -43,9 +43,9 @@ func postRef(r *http.Request, kind forum.PostKind) (forum.PostRef, bool) {
 // for a reply.
 func postURL(threadID int64, post forum.PostRef) string {
 	if post.Kind == forum.PostReply {
-		return replyURL(threadID, post.ID)
+		return forum.ReplyPath(threadID, post.ID)
 	}
-	return threadURL(threadID)
+	return forum.ThreadPath(threadID)
 }
 
 // localReturn accepts a "return" form value only when it is a path on
@@ -101,7 +101,7 @@ func (s *Server) handleDelete(kind forum.PostKind) http.HandlerFunc {
 		s.logger.Info("post deleted", "member_id", member(r).ID, "kind", string(kind), "post_id", post.ID)
 		to := "/"
 		if kind == forum.PostReply {
-			to = threadURL(threadID) + "#replies"
+			to = forum.ThreadPath(threadID) + "#replies"
 		}
 		http.Redirect(w, r, to, http.StatusSeeOther)
 	}
@@ -134,7 +134,7 @@ func (s *Server) handleReplyCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("reply created", "member_id", member(r).ID, "thread_id", threadID, "reply_id", id)
-	http.Redirect(w, r, replyURL(threadID, id), http.StatusSeeOther)
+	http.Redirect(w, r, forum.ReplyPath(threadID, id), http.StatusSeeOther)
 }
 
 // editView is the edit form for a thread (title, body, tags) or a reply
@@ -195,8 +195,8 @@ func (s *Server) renderThreadEdit(w http.ResponseWriter, r *http.Request, status
 	}
 	view.Page = s.page(r, "Edit thread", "")
 	view.IsThread = true
-	view.Action = threadURL(t.ID) + "/edit"
-	view.CancelURL = threadURL(t.ID)
+	view.Action = forum.ThreadPath(t.ID) + "/edit"
+	view.CancelURL = forum.ThreadPath(t.ID)
 	view.MaxTitleLen = forum.MaxTitleLen
 	s.render(w, r, status, "edit", view)
 }
@@ -227,7 +227,7 @@ func (s *Server) handleThreadUpdate(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, err)
 		return
 	}
-	http.Redirect(w, r, threadURL(t.ID), http.StatusSeeOther)
+	http.Redirect(w, r, forum.ThreadPath(t.ID), http.StatusSeeOther)
 }
 
 // ownReply loads a live reply for its author to edit. On any refusal it
@@ -252,7 +252,7 @@ func (s *Server) ownReply(w http.ResponseWriter, r *http.Request) (forum.Reply, 
 func (s *Server) renderReplyEdit(w http.ResponseWriter, r *http.Request, status int, reply forum.Reply, view editView) {
 	view.Page = s.page(r, "Edit reply", "")
 	view.Action = "/replies/" + strconv.FormatInt(reply.ID, 10) + "/edit"
-	view.CancelURL = replyURL(reply.ThreadID, reply.ID)
+	view.CancelURL = forum.ReplyPath(reply.ThreadID, reply.ID)
 	s.render(w, r, status, "edit", view)
 }
 
@@ -282,5 +282,5 @@ func (s *Server) handleReplyUpdate(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, err)
 		return
 	}
-	http.Redirect(w, r, replyURL(threadID, reply.ID), http.StatusSeeOther)
+	http.Redirect(w, r, forum.ReplyPath(threadID, reply.ID), http.StatusSeeOther)
 }

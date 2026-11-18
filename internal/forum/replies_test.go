@@ -103,8 +103,8 @@ func TestStore_ReplyTree_AE2_HigherScoreFirstChildNested(t *testing.T) {
 	if child.ID != c || child.ParentID != a || child.Depth != 1 || roots[0].Depth != 0 || roots[0].ParentID != 0 {
 		t.Errorf("child = %+v, roots[0] = %+v", child, roots[0])
 	}
-	if child.AuthorName != "Sam" || child.AuthorSlackID != "U0SAM" || child.AuthorID != sam {
-		t.Errorf("author fields = %q %q %d", child.AuthorName, child.AuthorSlackID, child.AuthorID)
+	if child.AuthorName != "Sam" || child.AuthorID != sam {
+		t.Errorf("author fields = %q %d", child.AuthorName, child.AuthorID)
 	}
 }
 
@@ -256,7 +256,7 @@ func TestStore_DeletePost_AE4_ReplyWithTwoReplies_LeavesPlaceholder(t *testing.T
 	wantOutline(t, s, th, "<deleted>(0)[one(0) two(0)] bystander(0)")
 	roots, counts := treeOf(t, s, th, dana)
 	ph := roots[0]
-	if !ph.Deleted || ph.Removed || ph.BodyMD != "" || ph.AuthorID != 0 || ph.AuthorName != "" || ph.AuthorSlackID != "" || ph.ID != parent {
+	if !ph.Deleted || ph.Removed || ph.BodyMD != "" || ph.AuthorID != 0 || ph.AuthorName != "" || ph.ID != parent {
 		t.Errorf("placeholder leaks or is mislabelled: %+v", ph)
 	}
 	if counts.Live != 3 || threadOf(t, s, th, 0).ReplyCount != 3 {

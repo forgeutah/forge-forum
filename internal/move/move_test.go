@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -74,6 +76,9 @@ func newMoveFixture(t *testing.T) *moveFixture {
 		id := fmt.Sprintf("UR%d", i)
 		f.slack.Users[id] = slackx.User{ID: id, Name: fmt.Sprintf("Replier %d", i)}
 	}
+	// Notifications are on, as in production, so a move that announced or
+	// sent reply messages would leave extra outbox rows.
+	f.store.SetNotifier(forum.Notifier{BaseURL: testBaseURL, AnnounceChannel: "C0ANNOUNCE"})
 	f.mover = New(Deps{
 		Slack:      f.slack,
 		Store:      f.store,
@@ -307,6 +312,13 @@ func TestMover_Move_AE6_LinkBackOnlyNoAnnouncementNoDMs(t *testing.T) {
 	f.moveAE5(t)
 	th := f.onlyThread(t)
 
+	// The original poster would be messaged about every imported reply if
+	// the importer sent reply messages: they have them on.
+	var askerWantsDMs bool
+	if err := f.db.Reader().QueryRow(`SELECT dm_replies FROM members WHERE slack_user_id = 'UASKER'`).Scan(&askerWantsDMs); err != nil || !askerWantsDMs {
+		t.Fatalf("original poster's dm_replies = %v, %v; want on", askerWantsDMs, err)
+	}
+
 	rows := f.outbox(t)
 	if len(rows) != 1 {
 		t.Fatalf("outbox = %+v, want exactly one row", rows)
@@ -504,7 +516,7 @@ func TestMover_Move_CreditsAuthorsWhoNeverSignedIn(t *testing.T) {
 	var signedIn int64
 	err = f.db.WithWriteTx(context.Background(), func(tx *sql.Tx) error {
 		var err error
-		signedIn, err = identity.EnsureBySlackID(context.Background(), tx, "UASKER", "Ada", "")
+		signedIn, err = identity.EnsureBySlackID(context.Background(), tx, "UASKER", "Ada", "", testNow)
 		return err
 	})
 	if err != nil || signedIn != th.AuthorID {
@@ -533,6 +545,11 @@ func TestMover_Move_ShortcutOnReplyMovesWholeThread(t *testing.T) {
 	dialog := f.slack.Dialogs[0].Dialog
 	if dialog.Title != "Has anyone moved from Ingress to Gateway API?" {
 		t.Errorf("pre-filled title = %q, want the original post's first line", dialog.Title)
+	}
+	// The trigger lasts three seconds: the dialog needs the original post
+	// only, never the whole thread.
+	if f.called("ThreadRoot") != 1 || f.called("ThreadReplies") != 0 {
+		t.Errorf("Slack calls before the dialog: %+v, want one ThreadRoot and no ThreadReplies", f.slack.Calls)
 	}
 	var meta moveMetadata
 	if err := json.Unmarshal([]byte(dialog.PrivateMetadata), &meta); err != nil || meta.Channel != testChannel || meta.TS != testRootTS {
@@ -888,7 +905,7 @@ func TestMover_HandleShortcut_OpensDialogWithTitleTagsAndThread(t *testing.T) {
 	}
 	// The trigger lasts three seconds: a shortcut on the original post
 	// must not read the thread first.
-	if f.called("ThreadReplies") != 0 || f.called("UserInfo") != 0 {
+	if f.called("ThreadReplies") != 0 || f.called("ThreadRoot") != 0 || f.called("UserInfo") != 0 {
 		t.Errorf("Slack calls before the dialog: %+v", f.slack.Calls)
 	}
 	if posted := f.slack.PostedMessages(); len(posted) != 0 {
@@ -953,5 +970,234 @@ func TestMover_HandleShortcut_UnreadableThreadStillOpensDialog(t *testing.T) {
 	}
 	if d := f.slack.Dialogs[0].Dialog; d.Title != "" || d.PrivateMetadata != `{"channel":"C1","ts":"1760950800.000100"}` {
 		t.Errorf("dialog = %+v, want an empty title for the thread root", d)
+	}
+	if f.called("ThreadRoot") != 1 || f.called("ThreadReplies") != 0 {
+		t.Errorf("Slack calls = %+v, want one ThreadRoot and no ThreadReplies", f.slack.Calls)
+	}
+}
+
+// TestMover_HandleShortcut_RootWithoutTextRefused checks a file-only original post opens no dialog and the member is told why.
+func TestMover_HandleShortcut_RootWithoutTextRefused(t *testing.T) {
+	t.Run("on the original post", func(t *testing.T) {
+		f := newMoveFixture(t)
+		sc := rootShortcut()
+		sc.MessageText = " \n"
+		if err := f.mover.HandleShortcut(context.Background(), sc); err != nil {
+			t.Fatalf("HandleShortcut: %v", err)
+		}
+		posted := f.slack.PostedMessages()
+		if len(f.slack.Dialogs) != 0 || f.called("OpenMoveDialog") != 0 || len(posted) != 1 || posted[0].Channel != "UMOVER" || posted[0].ThreadTS != "" || posted[0].Text != noTextText {
+			t.Errorf("dialogs = %d, posted = %+v; want no dialog and the refusal sent to the member", len(f.slack.Dialogs), posted)
+		}
+	})
+	t.Run("on a reply", func(t *testing.T) {
+		f := newMoveFixture(t)
+		f.seedThread(2)
+		f.slack.Threads[slackx.ThreadKey(testChannel, testRootTS)][0] = slackx.Message{User: "UASKER", SubType: "file_share", TS: testRootTS, ThreadTS: testRootTS}
+		sc := rootShortcut()
+		sc.MessageTS, sc.ThreadTS, sc.MessageUserID, sc.MessageText = replyTS(1), testRootTS, "UR1", "reply 1"
+		if err := f.mover.HandleShortcut(context.Background(), sc); err != nil {
+			t.Fatalf("HandleShortcut: %v", err)
+		}
+		posted := f.slack.PostedMessages()
+		if len(f.slack.Dialogs) != 0 || len(posted) != 1 || posted[0].Channel != "UMOVER" || posted[0].Text != noTextText {
+			t.Errorf("dialogs = %d, posted = %+v; want no dialog and the refusal sent to the member", len(f.slack.Dialogs), posted)
+		}
+	})
+}
+
+// TestMover_Move_RootWithoutUsableBodyRefusedBeforeClassifying checks the job refuses an empty or over-long original post without classifying or failing.
+func TestMover_Move_RootWithoutUsableBodyRefusedBeforeClassifying(t *testing.T) {
+	cases := []struct {
+		name string
+		root slackx.Message
+		want string
+	}{
+		{"file with no text", slackx.Message{User: "UASKER", SubType: "file_share", TS: testRootTS, ThreadTS: testRootTS}, noTextText},
+		{"only whitespace", slackx.Message{User: "UASKER", TS: testRootTS, ThreadTS: testRootTS, Text: " \n\t"}, noTextText},
+		{"too long", slackx.Message{User: "UASKER", TS: testRootTS, ThreadTS: testRootTS, Text: strings.Repeat("é", forum.MaxBodyLen+1)}, tooLongText},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newMoveFixture(t)
+			f.seedThread(3)
+			f.slack.Threads[slackx.ThreadKey(testChannel, testRootTS)][0] = tc.root
+			f.cls.Direct[replyTS(1)] = true
+			// The submission arrives without the shortcut having seen the
+			// original post, as when it was invoked on a reply.
+			f.submit(t, rootSubmission())
+
+			f.requireNothingMoved(t)
+			if n := f.count(t, "notifications"); n != 0 {
+				t.Errorf("notifications = %+v, want none: a refusal is not a failed move", f.outbox(t))
+			}
+			if f.cls.Calls != 0 {
+				t.Errorf("classifier calls = %d, want 0", f.cls.Calls)
+			}
+			posted := f.slack.PostedMessages()
+			if len(posted) != 1 || posted[0].Channel != "UMOVER" || posted[0].ThreadTS != "" || posted[0].Text != tc.want {
+				t.Errorf("posted = %+v, want only the refusal %q sent to the member", posted, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefusalTexts_CopyRules checks what a refused mover is told is sentence case with no exclamation marks.
+func TestRefusalTexts_CopyRules(t *testing.T) {
+	for _, text := range []string{notPublicText, notMemberText, noTextText, tooLongText, alreadyMovedTo} {
+		if strings.Contains(text, "!") || !strings.HasPrefix(text, strings.ToUpper(text[:1])) || !strings.HasSuffix(text, ".") {
+			t.Errorf("refusal %q breaks the copy rules", text)
+		}
+	}
+}
+
+// shutdownClassifier holds Classify until the job's context ends, as a
+// call to the model does when the process is asked to stop.
+type shutdownClassifier struct {
+	entered chan struct{}
+	calls   int
+}
+
+func (c *shutdownClassifier) Classify(ctx context.Context, _ SlackMessage, _ []SlackMessage) (map[string]bool, error) {
+	c.calls++
+	c.entered <- struct{}{}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestMover_Shutdown_CancelsJobInFlightAndTellsMover checks a move cut short by shutdown imports nothing and leaves the mover's failure message in the outbox.
+func TestMover_Shutdown_CancelsJobInFlightAndTellsMover(t *testing.T) {
+	f := newMoveFixture(t)
+	f.seedThread(3)
+	cls := &shutdownClassifier{entered: make(chan struct{}, 1)}
+	f.mover.d.Classifier = cls
+
+	// The interaction that starts the job ends long before the job does.
+	ctx, endInteraction := context.WithCancel(context.Background())
+	if errs := f.mover.HandleSubmission(ctx, rootSubmission()); errs != nil {
+		t.Fatalf("HandleSubmission returned field errors %v", errs)
+	}
+	endInteraction()
+	<-cls.entered
+
+	f.mover.Shutdown()
+	f.mover.Wait()
+
+	if cls.calls != 1 {
+		t.Errorf("classifier calls = %d, want 1", cls.calls)
+	}
+	f.requireMoveFailed(t)
+	if f.called("Permalink") != 0 {
+		t.Error("the job carried on past the classifier after shutdown")
+	}
+}
+
+// TestMover_Shutdown_SubmissionAfterwardsImportsNothingAndTellsMover checks a dialog confirmed during shutdown fails whole instead of starting a move.
+func TestMover_Shutdown_SubmissionAfterwardsImportsNothingAndTellsMover(t *testing.T) {
+	f := newMoveFixture(t)
+	f.seedThread(3)
+	f.mover.Shutdown()
+	f.mover.Shutdown() // a second call is harmless
+	f.submit(t, rootSubmission())
+
+	f.requireMoveFailed(t)
+	if f.cls.Calls != 0 {
+		t.Errorf("classifier calls = %d, want 0", f.cls.Calls)
+	}
+}
+
+// postInteraction sends body to the forum's interactions endpoint the way
+// forge-bot does, served by the fixture's Mover.
+func (f *moveFixture) postInteraction(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	const token = "forum-service-token-0123456789abcdef"
+	r := httptest.NewRequest(http.MethodPost, "/internal/slack/interactions", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Forge-Bot-Contract", "1")
+	w := httptest.NewRecorder()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	slackx.InteractionsHandler(token, testTeam, f.mover, logger).ServeHTTP(w, r)
+	return w
+}
+
+// TestMover_Interactions_ShortcutThenSubmission_ImportsThread checks the
+// whole path from forge-bot: a forwarded shortcut opens the dialog, and
+// the forwarded submission of that dialog imports the thread.
+func TestMover_Interactions_ShortcutThenSubmission_ImportsThread(t *testing.T) {
+	f := newMoveFixture(t)
+	f.seedThread(3)
+	f.cls.Direct[replyTS(2)] = true
+
+	shortcut, err := json.Marshal(map[string]any{
+		"type":        "message_shortcut",
+		"callback_id": slackx.MoveShortcutCallbackID,
+		"trigger_id":  "trigger-1",
+		"team_id":     testTeam,
+		"user":        map[string]string{"id": "UMOVER", "name": "mo"},
+		"channel":     map[string]string{"id": testChannel},
+		// The shortcut is picked on a reply; the whole thread moves.
+		"message": map[string]string{"ts": replyTS(1), "thread_ts": testRootTS, "text": "reply 1", "user": "UR1", "bot_id": "", "subtype": ""},
+	})
+	if err != nil {
+		t.Fatalf("encode shortcut: %v", err)
+	}
+	if w := f.postInteraction(t, string(shortcut)); w.Code != http.StatusOK {
+		t.Fatalf("shortcut: status %d, body %q", w.Code, w.Body.String())
+	}
+	if len(f.slack.Dialogs) != 1 {
+		t.Fatalf("dialogs opened = %d, want 1", len(f.slack.Dialogs))
+	}
+	dialog := f.slack.Dialogs[0]
+	if dialog.TriggerID != "trigger-1" || dialog.Dialog.Title != "Has anyone moved from Ingress to Gateway API?" {
+		t.Errorf("dialog = %+v, want trigger-1 and the original post's first line as the title", dialog)
+	}
+
+	submission := func(tags []string) string {
+		body, err := json.Marshal(map[string]any{
+			"type":        "view_submission",
+			"callback_id": slackx.MoveViewCallbackID,
+			"trigger_id":  "trigger-2",
+			"team_id":     testTeam,
+			"user":        map[string]string{"id": "UMOVER", "name": "mo"},
+			"view": map[string]any{
+				"id":               "V1",
+				"callback_id":      slackx.MoveViewCallbackID,
+				"private_metadata": dialog.Dialog.PrivateMetadata,
+				"values": map[string]any{
+					slackx.MoveTitleBlockID: map[string]any{slackx.MoveTitleActionID: map[string]any{
+						"type": "plain_text_input", "value": "Moving from Ingress to Gateway API"}},
+					slackx.MoveTagsBlockID: map[string]any{slackx.MoveTagsActionID: map[string]any{
+						"type": "multi_static_select", "selected_options": tags}},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("encode submission: %v", err)
+		}
+		return string(body)
+	}
+
+	// No tags: the dialog stays open with the error and nothing moves.
+	w := f.postInteraction(t, submission([]string{}))
+	if want := `{"errors":{"tags":"Pick at least one tag."}}`; w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != want {
+		t.Fatalf("submission without tags: status %d, body %s\nwant 200 and %s", w.Code, w.Body.String(), want)
+	}
+	f.mover.Wait()
+	f.requireNothingMoved(t)
+
+	w = f.postInteraction(t, submission(dialog.Dialog.Tags[:2]))
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "{}" {
+		t.Fatalf("submission: status %d, body %q; want 200 and {}", w.Code, w.Body.String())
+	}
+	f.mover.Wait()
+
+	th := f.onlyThread(t)
+	if th.Title != "Moving from Ingress to Gateway API" || !th.FromSlack || th.ReplyCount != 1 || th.SlackRemaining != 2 {
+		t.Errorf("thread = title %q, from Slack %v, %d replies, %d left in Slack; want the submitted title, 1 reply, 2 left",
+			th.Title, th.FromSlack, th.ReplyCount, th.SlackRemaining)
+	}
+	if len(th.Tags) != 2 {
+		t.Errorf("tags = %v, want the two submitted", th.Tags)
 	}
 }

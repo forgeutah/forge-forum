@@ -30,8 +30,10 @@ type voteView struct {
 	CSRF   string
 }
 
-func (s *Server) voteView(m identity.Member, action, class string, score int, voted bool) voteView {
-	return voteView{Action: action, Class: class, Score: score, Voted: voted, CSRF: s.csrfToken(m)}
+// newVoteView takes the request's CSRF token, which Page.CSRF holds, so
+// a page with many buttons computes it once.
+func newVoteView(csrf, action, class string, score int, voted bool) voteView {
+	return voteView{Action: action, Class: class, Score: score, Voted: voted, CSRF: csrf}
 }
 
 // replyDraft is a reply that was refused, kept so its form can show the
@@ -89,10 +91,6 @@ func pathID(r *http.Request) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-func replyURL(threadID, replyID int64) string {
-	return threadURL(threadID) + "#reply-" + strconv.FormatInt(replyID, 10)
-}
-
 func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -125,18 +123,19 @@ func (s *Server) renderThread(w http.ResponseWriter, r *http.Request, status int
 		return
 	}
 
+	page := s.page(r, t.Title, "")
 	view := threadView{
-		Page:           s.page(r, t.Title, ""),
+		Page:           page,
 		Thread:         t,
 		Body:           markdown.Render(t.BodyMD),
-		Vote:           s.voteView(m, threadURL(id)+"/vote", "vote vote--lg", t.Score, t.Voted),
+		Vote:           newVoteView(page.CSRF, forum.ThreadPath(id)+"/vote", "vote vote--lg", t.Score, t.Voted),
 		Mine:           t.AuthorID == m.ID,
 		CanRemove:      m.IsAdmin && t.AuthorID != m.ID,
 		Counts:         counts,
 		NotifiesAuthor: s.cfg.SlackEnabled() && t.AuthorID != m.ID,
 	}
 	placed := false
-	view.Replies = s.replyViews(tree, nil, t, m, draft, &placed)
+	view.Replies = replyViews(tree, nil, t, m, page.CSRF, draft, &placed)
 	if !placed {
 		// A refused reply to the thread, or to a reply that has since gone.
 		view.Draft = draft
@@ -146,19 +145,19 @@ func (s *Server) renderThread(w http.ResponseWriter, r *http.Request, status int
 
 // replyViews turns one level of the tree into template data. parent is
 // nil at the top level. placed is set once draft has been given to the
-// reply it answers.
-func (s *Server) replyViews(nodes []*forum.ReplyNode, parent *forum.ReplyNode, t forum.Thread, m identity.Member, draft replyDraft, placed *bool) []replyView {
+// reply it answers. csrf is the request's token.
+func replyViews(nodes []*forum.ReplyNode, parent *forum.ReplyNode, t forum.Thread, m identity.Member, csrf string, draft replyDraft, placed *bool) []replyView {
 	views := make([]replyView, 0, len(nodes))
 	for _, n := range nodes {
 		v := replyView{
 			N:            n,
 			ThreadID:     t.ID,
 			FlatChildren: n.Depth+1 >= maxIndentLevels,
-			CSRF:         s.csrfToken(m),
+			CSRF:         csrf,
 		}
 		if !n.Deleted {
 			v.Body = markdown.Render(n.BodyMD)
-			v.Vote = s.voteView(m, "/replies/"+strconv.FormatInt(n.ID, 10)+"/vote", "vote vote--inline", n.Score, n.Voted)
+			v.Vote = newVoteView(csrf, "/replies/"+strconv.FormatInt(n.ID, 10)+"/vote", "vote vote--inline", n.Score, n.Voted)
 			v.ByThreadAuthor = n.AuthorID == t.AuthorID
 			v.Mine = n.AuthorID == m.ID
 			v.CanRemove = m.IsAdmin && !v.Mine
@@ -172,7 +171,7 @@ func (s *Server) replyViews(nodes []*forum.ReplyNode, parent *forum.ReplyNode, t
 				v.Draft, *placed = draft, true
 			}
 		}
-		v.Children = s.replyViews(n.Children, n, t, m, draft, placed)
+		v.Children = replyViews(n.Children, n, t, m, csrf, draft, placed)
 		views = append(views, v)
 	}
 	return views

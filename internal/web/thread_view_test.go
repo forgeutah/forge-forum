@@ -27,7 +27,7 @@ var (
 )
 
 func withSlack(c *config.Config) {
-	c.SlackBotToken, c.SlackAppToken, c.SlackAnnounceChannel = "xoxb-x", "xapp-x", "C0ANNOUNCE"
+	c.ForgeBotURL, c.ForgeBotToken, c.SlackAnnounceChannel = "http://forge-bot.test:8080", "forum-service-token-0123456789abcdef", "C0ANNOUNCE"
 }
 
 // submit posts a form as u with u's CSRF token. kv is field, value pairs.

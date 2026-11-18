@@ -65,5 +65,5 @@ func (s *Server) handleThreadCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("thread created", "member_id", member(r).ID, "thread_id", id)
-	http.Redirect(w, r, threadURL(id), http.StatusSeeOther)
+	http.Redirect(w, r, forum.ThreadPath(id), http.StatusSeeOther)
 }

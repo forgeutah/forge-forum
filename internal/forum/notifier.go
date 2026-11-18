@@ -39,10 +39,12 @@ func (s *Store) wake(enqueued bool) {
 	}
 }
 
-func threadPath(id int64) string { return "/threads/" + strconv.FormatInt(id, 10) }
+// ThreadPath returns the site-relative URL of a thread's page.
+func ThreadPath(id int64) string { return "/threads/" + strconv.FormatInt(id, 10) }
 
-func replyPath(threadID, replyID int64) string {
-	return threadPath(threadID) + "#reply-" + strconv.FormatInt(replyID, 10)
+// ReplyPath returns the site-relative URL of a reply on its thread's page.
+func ReplyPath(threadID, replyID int64) string {
+	return ThreadPath(threadID) + "#reply-" + strconv.FormatInt(replyID, 10)
 }
 
 // enqueueAnnounceTx queues the channel announcement for a thread created
@@ -80,7 +82,7 @@ func (s *Store) enqueueAnnounceTx(ctx context.Context, tx *sql.Tx, threadID int6
 
 	err = notify.Enqueue(ctx, tx, s.now(), notify.KindAnnounce, notify.Message{
 		Channel: s.notifier.AnnounceChannel,
-		Text:    notify.AnnounceText(authorSlackID, title, s.notifier.BaseURL+threadPath(threadID), tags),
+		Text:    notify.AnnounceText(authorSlackID, title, s.notifier.BaseURL+ThreadPath(threadID), tags),
 	})
 	return err == nil, err
 }
@@ -110,7 +112,7 @@ func (s *Store) enqueueReplyDMTx(ctx context.Context, tx *sql.Tx, replyID int64,
 	}
 	err := notify.Enqueue(ctx, tx, s.now(), notify.KindReplyDM, notify.Message{
 		Channel: slackID,
-		Text:    notify.ReplyDMText(replier, title, in.BodyMD, s.notifier.BaseURL+replyPath(in.ThreadID, replyID)),
+		Text:    notify.ReplyDMText(replier, title, in.BodyMD, s.notifier.BaseURL+ReplyPath(in.ThreadID, replyID)),
 	})
 	return err == nil, err
 }

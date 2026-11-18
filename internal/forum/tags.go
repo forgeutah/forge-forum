@@ -3,6 +3,7 @@ package forum
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -117,7 +118,7 @@ func resolveTagsTx(ctx context.Context, tx *sql.Tx, slugs []string, keepFor int6
 			SELECT id FROM tags
 			WHERE slug = ? AND (active = 1
 				OR id IN (SELECT tag_id FROM thread_tags WHERE thread_id = ?))`, slug, keepFor).Scan(&id)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ValidationError{Field: "tags", Message: "One of those tags is not on the list. Pick from the tags shown."}
 		}
 		if err != nil {

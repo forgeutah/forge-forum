@@ -18,7 +18,7 @@ type Fake struct {
 	// Threads holds thread messages, root first, keyed by ThreadKey.
 	Threads map[string][]Message
 	// Channels and Users are keyed by ID. A missing entry is reported as
-	// Slack would: channel_not_found or user_not_found.
+	// Slack would: ErrChannelNotFound or ErrUserNotFound.
 	Channels map[string]Channel
 	Users    map[string]User
 	// Permalinks is keyed by ThreadKey(channel, ts). A missing entry gets
@@ -105,8 +105,37 @@ func (f *Fake) ThreadReplies(ctx context.Context, channel, ts string) ([]Message
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("ThreadReplies", channel, ts)
+	msgs, err := f.thread(channel, ts)
+	if err != nil {
+		return nil, err
+	}
+	return append([]Message(nil), msgs...), nil
+}
+
+// ThreadRoot implements Client. ts may be the root or any reply in a
+// scripted thread.
+func (f *Fake) ThreadRoot(ctx context.Context, channel, ts string) (Message, error) {
+	if err := ctx.Err(); err != nil {
+		return Message{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ThreadRoot", channel, ts)
+	msgs, err := f.thread(channel, ts)
+	if err != nil {
+		return Message{}, err
+	}
+	if len(msgs) == 0 {
+		return Message{}, &APIError{Code: ErrThreadNotFound}
+	}
+	return msgs[0], nil
+}
+
+// thread returns the scripted thread in channel that ts is the root of
+// or a message in. The caller holds f.mu.
+func (f *Fake) thread(channel, ts string) ([]Message, error) {
 	if msgs, ok := f.Threads[ThreadKey(channel, ts)]; ok {
-		return append([]Message(nil), msgs...), nil
+		return msgs, nil
 	}
 	prefix := channel + ":"
 	for key, msgs := range f.Threads {
@@ -115,11 +144,11 @@ func (f *Fake) ThreadReplies(ctx context.Context, channel, ts string) ([]Message
 		}
 		for _, m := range msgs {
 			if m.TS == ts {
-				return append([]Message(nil), msgs...), nil
+				return msgs, nil
 			}
 		}
 	}
-	return nil, &APIError{Code: "thread_not_found"}
+	return nil, &APIError{Code: ErrThreadNotFound}
 }
 
 // ChannelInfo implements Client.
@@ -132,7 +161,7 @@ func (f *Fake) ChannelInfo(ctx context.Context, channel string) (Channel, error)
 	f.record("ChannelInfo", channel)
 	ch, ok := f.Channels[channel]
 	if !ok {
-		return Channel{}, &APIError{Code: "channel_not_found"}
+		return Channel{}, &APIError{Code: ErrChannelNotFound}
 	}
 	return ch, nil
 }
@@ -147,7 +176,7 @@ func (f *Fake) UserInfo(ctx context.Context, userID string) (User, error) {
 	f.record("UserInfo", userID)
 	u, ok := f.Users[userID]
 	if !ok {
-		return User{}, &APIError{Code: "user_not_found"}
+		return User{}, &APIError{Code: ErrUserNotFound}
 	}
 	return u, nil
 }

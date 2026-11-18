@@ -8,9 +8,6 @@ import (
 	"github.com/forgeutah/forge-forum/internal/forum"
 )
 
-// pageSize is how many threads one feed page shows.
-const pageSize = forum.DefaultPageSize
-
 // maxPage keeps a typed-in page number from turning into a huge offset.
 const maxPage = 100000
 
@@ -65,8 +62,6 @@ func feedURL(tag string, top bool, page int) string {
 	return "/?" + q.Encode()
 }
 
-func threadURL(id int64) string { return "/threads/" + strconv.FormatInt(id, 10) }
-
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	tag := q.Get("tag")
@@ -77,7 +72,8 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	page = min(page, maxPage)
 
-	opts := forum.ListOptions{Tag: tag, Page: page, PageSize: pageSize, ViewerID: member(r).ID}
+	// One page holds forum.DefaultPageSize threads.
+	opts := forum.ListOptions{Tag: tag, Page: page, ViewerID: member(r).ID}
 	if top {
 		opts.Sort = forum.SortScore
 	}
@@ -107,8 +103,8 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	here := feedURL(tag, top, page)
 	for _, t := range threads {
-		row := threadRow{Thread: t, URL: threadURL(t.ID)}
-		row.Vote = s.voteView(member(r), row.URL+"/vote", "vote", t.Score, t.Voted)
+		row := threadRow{Thread: t, URL: forum.ThreadPath(t.ID)}
+		row.Vote = newVoteView(view.CSRF, row.URL+"/vote", "vote", t.Score, t.Voted)
 		// Voting from the feed comes back to the same page, at the same row.
 		row.Vote.Return = here + "#thread-" + strconv.FormatInt(t.ID, 10)
 		view.Threads = append(view.Threads, row)

@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -60,7 +61,7 @@ type Server struct {
 // New builds the server and parses its templates.
 func New(cfg config.Config, database *db.DB, store *forum.Store, logger *slog.Logger) (*Server, error) {
 	if len(cfg.ProxySecrets) == 0 {
-		return nil, fmt.Errorf("web: no proxy secret configured")
+		return nil, errors.New("web: no proxy secret configured")
 	}
 	s := &Server{
 		cfg:      cfg,

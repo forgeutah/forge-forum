@@ -13,7 +13,8 @@ import (
 	"strings"
 )
 
-// minSecretLen matches forge-proxy's PROXY_SECRET minimum.
+// minSecretLen matches forge-proxy's PROXY_SECRET minimum and forge-bot's
+// service token minimum.
 const minSecretLen = 32
 
 var teamIDPattern = regexp.MustCompile(`^T[A-Z0-9]+$`)
@@ -36,17 +37,23 @@ type Config struct {
 	// AuthPortalURL is where the sign-out link points. Optional.
 	AuthPortalURL string
 
-	SlackBotToken        string
-	SlackAppToken        string
+	// ForgeBotURL is the address of forge-bot, the service that connects
+	// to Slack, with no trailing slash. ForgeBotToken is the forum's
+	// service token there: the bot sends it with the interactions it
+	// forwards, and the forum sends it with its Slack API calls. The forum
+	// holds no Slack token of its own.
+	ForgeBotURL          string
+	ForgeBotToken        string
 	SlackAnnounceChannel string
 
 	AnthropicAPIKey string
 	ClassifierModel string
 }
 
-// SlackEnabled reports whether the forum can talk to Slack at all.
+// SlackEnabled reports whether the forum can talk to Slack at all, which
+// it does through forge-bot.
 func (c Config) SlackEnabled() bool {
-	return c.SlackBotToken != "" && c.SlackAppToken != ""
+	return c.ForgeBotURL != "" && c.ForgeBotToken != ""
 }
 
 // MoveEnabled reports whether "Move to forum" can run: it needs Slack and
@@ -72,8 +79,8 @@ func Load(getenv func(string) string) (Config, error) {
 		AdminRole:            get("ADMIN_ROLE", "admin"),
 		PublicBaseURL:        strings.TrimRight(get("PUBLIC_BASE_URL", ""), "/"),
 		AuthPortalURL:        get("AUTH_PORTAL_URL", ""),
-		SlackBotToken:        get("SLACK_BOT_TOKEN", ""),
-		SlackAppToken:        get("SLACK_APP_TOKEN", ""),
+		ForgeBotURL:          strings.TrimRight(get("FORGE_BOT_URL", ""), "/"),
+		ForgeBotToken:        get("FORGE_BOT_TOKEN", ""),
 		SlackAnnounceChannel: get("SLACK_ANNOUNCE_CHANNEL", ""),
 		AnthropicAPIKey:      get("ANTHROPIC_API_KEY", ""),
 		ClassifierModel:      get("CLASSIFIER_MODEL", "claude-haiku-5-5"),
@@ -107,8 +114,16 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL %q must be an http(s) URL", c.PublicBaseURL))
 	}
 
-	if (c.SlackBotToken == "") != (c.SlackAppToken == "") {
-		errs = append(errs, errors.New("SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set together"))
+	if (c.ForgeBotURL == "") != (c.ForgeBotToken == "") {
+		errs = append(errs, errors.New("FORGE_BOT_URL and FORGE_BOT_TOKEN must be set together"))
+	}
+	if c.ForgeBotURL != "" {
+		if u, err := url.Parse(c.ForgeBotURL); err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+			errs = append(errs, fmt.Errorf("FORGE_BOT_URL %q must be an http(s) URL", c.ForgeBotURL))
+		}
+	}
+	if c.ForgeBotToken != "" && len(c.ForgeBotToken) < minSecretLen {
+		errs = append(errs, fmt.Errorf("FORGE_BOT_TOKEN is shorter than %d characters", minSecretLen))
 	}
 
 	if len(errs) > 0 {

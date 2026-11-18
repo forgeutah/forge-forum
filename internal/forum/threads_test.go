@@ -40,7 +40,7 @@ func addMember(t *testing.T, d *db.DB, slackID, name string) int64 {
 	var id int64
 	err := d.WithWriteTx(context.Background(), func(tx *sql.Tx) error {
 		var err error
-		id, err = identity.EnsureBySlackID(context.Background(), tx, slackID, name, "")
+		id, err = identity.EnsureBySlackID(context.Background(), tx, slackID, name, "", time.Unix(1_700_000_000, 0))
 		return err
 	})
 	if err != nil {

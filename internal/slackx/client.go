@@ -1,14 +1,19 @@
 // Package slackx is the forum's view of Slack.
 //
+// The forum holds no Slack token and no connection to Slack. forge-bot
+// does: it posts the interactions the forum owns to InteractionsHandler,
+// and it passes the forum's Web API calls on to Slack (plan KTD5).
+//
 // Client names the handful of Web API calls the forum makes, so the rest
-// of the code never touches slack-go directly and tests can use Fake
-// (plan KTD5). RealClient is the slack-go implementation.
+// of the code never touches slack-go directly and tests can use Fake.
+// RealClient is the slack-go implementation.
 package slackx
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +31,9 @@ type Client interface {
 	// ThreadReplies returns every message of the thread containing ts,
 	// root first, following pagination.
 	ThreadReplies(ctx context.Context, channel, ts string) ([]Message, error)
+	// ThreadRoot returns only the first message of the thread containing
+	// ts. It is one small request, or two when ts names a reply.
+	ThreadRoot(ctx context.Context, channel, ts string) (Message, error)
 	ChannelInfo(ctx context.Context, channel string) (Channel, error)
 	UserInfo(ctx context.Context, userID string) (User, error)
 	Permalink(ctx context.Context, channel, ts string) (string, error)
@@ -67,8 +75,8 @@ type MoveDialog struct {
 	PrivateMetadata string   // opaque; round-trips to the submission
 }
 
-// Stable IDs the Socket Mode handler reads from the shortcut and the
-// modal submission.
+// Stable IDs InteractionsHandler reads from the shortcut and the modal
+// submission. forge-bot routes the two callback IDs to the forum.
 const (
 	MoveShortcutCallbackID = "move_to_forum"
 	MoveViewCallbackID     = "move_to_forum_submit"
@@ -87,7 +95,15 @@ const moveDialogNote = "The original post and the replies that answer it directl
 // repliesPageSize is the conversations.replies page size.
 const repliesPageSize = 200
 
-// APIError is an error Slack reported by code, such as "channel_not_found".
+// Slack error codes the forum acts on.
+const (
+	ErrChannelNotFound = "channel_not_found"
+	ErrNotInChannel    = "not_in_channel"
+	ErrUserNotFound    = "user_not_found"
+	ErrThreadNotFound  = "thread_not_found"
+)
+
+// APIError is an error Slack reported by code, such as ErrChannelNotFound.
 type APIError struct {
 	Code string
 }
@@ -114,30 +130,67 @@ func (e *RateLimitedError) Error() string {
 	return fmt.Sprintf("slack: rate limited, retry after %s", e.RetryAfter)
 }
 
-// RealClient talks to Slack's Web API through slack-go.
+// RealClient talks to Slack's Web API through slack-go, by way of
+// forge-bot.
 type RealClient struct {
 	api *slack.Client
 }
 
 var _ Client = (*RealClient)(nil)
 
-// NewClient returns the real client. baseURL "" means Slack's API; tests
-// pass an httptest server URL. httpClient nil means a client with a 30
-// second timeout.
-func NewClient(botToken, baseURL string, httpClient *http.Client) *RealClient {
+// NewClient returns the real client. token is the forum's forge-bot
+// service token and baseURL is the bot's Slack API address, such as
+// "http://forge-bot:8080/slack/api/"; the bot swaps the token for the
+// real one and passes each call on to Slack. baseURL "" means Slack's own
+// API, with token a Slack bot token. httpClient nil means a client with a
+// 30 second timeout.
+func NewClient(token, baseURL string, httpClient *http.Client) *RealClient {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	opts := []slack.Option{slack.OptionHTTPClient(httpClient)}
+	// A copy, so the caller's client is left as it was.
+	viaBot := *httpClient
+	viaBot.Transport = contractTransport{token: token, next: httpClient.Transport}
+	opts := []slack.Option{slack.OptionHTTPClient(&viaBot)}
 	if baseURL != "" {
-		// slack-go appends the method name directly to the endpoint.
+		// slack-go appends the method name directly to the endpoint, so it
+		// must end in exactly one slash.
 		opts = append(opts, slack.OptionAPIURL(strings.TrimRight(baseURL, "/")+"/"))
 	}
-	return &RealClient{api: slack.New(botToken, opts...)}
+	return &RealClient{api: slack.New(token, opts...)}
 }
 
-// API returns the underlying slack-go client, which Socket Mode needs.
-func (c *RealClient) API() *slack.Client { return c.api }
+// contractTransport makes every request match the forge-bot service
+// contract to the letter: a POST carrying the token as a bearer header.
+// slack-go on its own sends form posts with the token only in the body,
+// and chat.getPermalink as a GET.
+type contractTransport struct {
+	token string
+	next  http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t contractTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+t.token)
+	if req.Method == http.MethodGet {
+		// Slack takes the same arguments as a form post.
+		form := req.URL.RawQuery
+		req.URL.RawQuery = ""
+		req.Method = http.MethodPost
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Body = io.NopCloser(strings.NewReader(form))
+		req.ContentLength = int64(len(form))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(form)), nil
+		}
+	}
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return next.RoundTrip(req)
+}
 
 // PostMessage implements Client.
 func (c *RealClient) PostMessage(ctx context.Context, channel, text, threadTS string) error {
@@ -156,14 +209,71 @@ func (c *RealClient) PostMessage(ctx context.Context, channel, text, threadTS st
 // ThreadReplies implements Client. When the bot is not in the channel it
 // joins once and retries; Slack only allows that for public channels.
 func (c *RealClient) ThreadReplies(ctx context.Context, channel, ts string) ([]Message, error) {
-	msgs, err := c.threadReplies(ctx, channel, ts)
-	if ErrorCode(err) != "not_in_channel" {
-		return msgs, err
+	return joiningOnce(ctx, c, channel, func() ([]Message, error) {
+		return c.threadReplies(ctx, channel, ts)
+	})
+}
+
+// ThreadRoot implements Client. Like ThreadReplies it joins a public
+// channel the bot is not in, once, and retries.
+func (c *RealClient) ThreadRoot(ctx context.Context, channel, ts string) (Message, error) {
+	return joiningOnce(ctx, c, channel, func() (Message, error) {
+		return c.threadRoot(ctx, channel, ts)
+	})
+}
+
+// joiningOnce runs read; when Slack answers that the bot is not in the
+// channel it joins and runs read once more.
+func joiningOnce[T any](ctx context.Context, c *RealClient, channel string, read func() (T, error)) (T, error) {
+	out, err := read()
+	if ErrorCode(err) != ErrNotInChannel {
+		return out, err
 	}
 	if _, _, _, jerr := c.api.JoinConversationContext(ctx, channel); jerr != nil {
-		return nil, fmt.Errorf("join channel after not_in_channel: %w", mapErr(jerr))
+		var zero T
+		return zero, fmt.Errorf("join channel after not_in_channel: %w", mapErr(jerr))
 	}
-	return c.threadReplies(ctx, channel, ts)
+	return read()
+}
+
+func (c *RealClient) threadRoot(ctx context.Context, channel, ts string) (Message, error) {
+	first, err := c.firstMessage(ctx, channel, ts)
+	if err != nil {
+		return Message{}, err
+	}
+	// Asked about a reply, Slack returns only that reply. Ask again at
+	// the thread root it names.
+	if first.ThreadTS != "" && first.ThreadTS != first.TS {
+		return c.firstMessage(ctx, channel, first.ThreadTS)
+	}
+	return first, nil
+}
+
+// firstMessage asks conversations.replies for a single message at ts.
+func (c *RealClient) firstMessage(ctx context.Context, channel, ts string) (Message, error) {
+	page, _, _, err := c.api.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+		ChannelID: channel,
+		Timestamp: ts,
+		Limit:     1,
+	})
+	if err != nil {
+		return Message{}, mapErr(err)
+	}
+	if len(page) == 0 {
+		return Message{}, &APIError{Code: ErrThreadNotFound}
+	}
+	return toMessage(page[0]), nil
+}
+
+func toMessage(m slack.Message) Message {
+	return Message{
+		User:     m.User,
+		BotID:    m.BotID,
+		Text:     m.Text,
+		TS:       m.Timestamp,
+		ThreadTS: m.ThreadTimestamp,
+		SubType:  m.SubType,
+	}
 }
 
 func (c *RealClient) threadReplies(ctx context.Context, channel, ts string) ([]Message, error) {
@@ -188,14 +298,7 @@ func (c *RealClient) threadReplies(ctx context.Context, channel, ts string) ([]M
 			}
 		}
 		for _, m := range page {
-			out = append(out, Message{
-				User:     m.User,
-				BotID:    m.BotID,
-				Text:     m.Text,
-				TS:       m.Timestamp,
-				ThreadTS: m.ThreadTimestamp,
-				SubType:  m.SubType,
-			})
+			out = append(out, toMessage(m))
 		}
 		if next == "" {
 			return out, nil

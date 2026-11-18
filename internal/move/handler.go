@@ -1,3 +1,10 @@
+// Package move turns a Slack thread into a forum thread.
+//
+// A member picks the "Move to forum" shortcut on a message and confirms a
+// title and tags in a dialog (handler.go). A background job then reads
+// the thread and imports it in one transaction (job.go): the original
+// post and the replies that answer it directly, as sorted by a Classifier
+// (classifier.go, claude.go). Every other reply stays in Slack.
 package move
 
 import (
@@ -6,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +20,7 @@ import (
 
 	"github.com/forgeutah/forge-forum/internal/db"
 	"github.com/forgeutah/forge-forum/internal/forum"
+	"github.com/forgeutah/forge-forum/internal/markdown"
 	"github.com/forgeutah/forge-forum/internal/slackx"
 )
 
@@ -21,6 +28,8 @@ import (
 const (
 	notPublicText  = "Move to forum works on threads in public channels. This one is in a private channel or a direct message, so it stays in Slack."
 	notMemberText  = "Move to forum works on threads a member started. This one was started by an app, so it stays in Slack."
+	noTextText     = "Move to forum needs an original post with text. This one has none, so it stays in Slack."
+	tooLongText    = "Move to forum needs an original post that fits on the forum. This one is too long, so it stays in Slack."
 	alreadyMovedTo = "That thread is already on the forum."
 )
 
@@ -51,6 +60,11 @@ type Deps struct {
 type Mover struct {
 	d Deps
 
+	// jobsCtx is the parent of every job's context. It outlives the
+	// interaction that starts a job and ends at Shutdown.
+	jobsCtx  context.Context
+	stopJobs context.CancelFunc
+
 	jobs sync.WaitGroup
 	mu   sync.Mutex
 	// running holds the Slack threads with a move in progress, so a
@@ -69,10 +83,19 @@ func New(d Deps) *Mover {
 		d.Now = time.Now
 	}
 	d.BaseURL = strings.TrimRight(d.BaseURL, "/")
-	return &Mover{d: d, running: map[string]bool{}}
+	jobsCtx, stopJobs := context.WithCancel(context.Background())
+	return &Mover{d: d, running: map[string]bool{}, jobsCtx: jobsCtx, stopJobs: stopJobs}
 }
 
-// Wait blocks until every move job that was started has finished.
+// Shutdown cancels every move job in flight, and any started afterwards.
+// A cancelled job imports nothing and leaves the mover's failure message
+// in the outbox, to be delivered after the restart. Shutdown does not
+// wait for the jobs; call Wait for that. It is safe to call more than
+// once.
+func (m *Mover) Shutdown() { m.stopJobs() }
+
+// Wait blocks until every move job that was started has finished. Call it
+// once no more submissions can arrive.
 func (m *Mover) Wait() { m.jobs.Wait() }
 
 // moveMetadata is the dialog's private metadata: the Slack thread the
@@ -86,8 +109,8 @@ type moveMetadata struct {
 // It does only quick checks before opening the dialog, because the
 // trigger expires three seconds after the click: the channel must be
 // public, the thread must not have been moved already, and its original
-// post must have been written by a member. A refusal is sent to the
-// member as a direct message and no dialog opens.
+// post must have been written by a member and have text. A refusal is
+// sent to the member as a direct message and no dialog opens.
 func (m *Mover) HandleShortcut(ctx context.Context, sc slackx.ShortcutEvent) error {
 	if sc.TeamID != m.d.TeamID {
 		m.d.Logger.Warn("move shortcut from another workspace ignored", "team", sc.TeamID)
@@ -111,20 +134,25 @@ func (m *Mover) HandleShortcut(ctx context.Context, sc slackx.ShortcutEvent) err
 	root, rootKnown := slackx.Message{User: sc.MessageUserID, BotID: sc.MessageBotID, Text: sc.MessageText}, true
 	if onReply {
 		// The title comes from the original post, which the shortcut on a
-		// reply does not carry.
-		msgs, err := m.d.Slack.ThreadReplies(ctx, sc.ChannelID, rootTS)
-		if err != nil || len(msgs) == 0 {
+		// reply does not carry. Only that post is read: the trigger does
+		// not wait for a long thread.
+		msg, err := m.d.Slack.ThreadRoot(ctx, sc.ChannelID, rootTS)
+		if err != nil {
 			// Not worth losing the trigger over: the member types a title
 			// and the job reads the thread again.
 			m.d.Logger.Warn("move shortcut could not read the thread; opening with an empty title",
 				"channel", sc.ChannelID, "err", err)
 			root, rootKnown = slackx.Message{}, false
 		} else {
-			root = msgs[0]
+			root = msg
 		}
 	}
 	if rootKnown && !memberMessage(root) {
 		return m.tell(ctx, sc.UserID, notMemberText)
+	}
+	if rootKnown && strings.TrimSpace(root.Text) == "" {
+		// A file with no caption, say. The job checks the converted body.
+		return m.tell(ctx, sc.UserID, noTextText)
 	}
 
 	tags, err := m.d.Store.ActiveTags(ctx)
@@ -190,8 +218,8 @@ func (m *Mover) HandleSubmission(ctx context.Context, sub slackx.SubmissionEvent
 		moverID:   sub.UserID,
 		moverName: sub.UserName,
 	}
-	// The job outlives the interaction that started it.
-	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobTimeout)
+	// The job outlives the interaction that started it, but not the process.
+	jobCtx, cancel := context.WithTimeout(m.jobsCtx, jobTimeout)
 	m.jobs.Go(func() {
 		defer cancel()
 		defer func() {
@@ -241,7 +269,7 @@ func (m *Mover) checkTags(ctx context.Context, selected []string) ([]string, str
 func (m *Mover) refusal(ctx context.Context, channelID, rootTS string) (slackx.Channel, string, error) {
 	ch, err := m.d.Slack.ChannelInfo(ctx, channelID)
 	switch {
-	case slackx.ErrorCode(err) == "channel_not_found":
+	case slackx.ErrorCode(err) == slackx.ErrChannelNotFound:
 		// How Slack answers for a private channel or DM the bot is not in.
 		return ch, notPublicText, nil
 	case err != nil:
@@ -259,6 +287,20 @@ func (m *Mover) refusal(ctx context.Context, channelID, rootTS string) (slackx.C
 	return ch, "", nil
 }
 
+// bodyRefusal returns what to tell a member whose thread's original post
+// cannot become a thread body, or "" when it can. The forum would reject
+// such a body at import, however often the move is tried.
+func bodyRefusal(bodyMD string) string {
+	body := strings.TrimSpace(bodyMD)
+	switch {
+	case body == "":
+		return noTextText
+	case utf8.RuneCountInString(body) > forum.MaxBodyLen:
+		return tooLongText
+	}
+	return ""
+}
+
 // alreadyMovedText points a member at the forum thread a Slack thread
 // already became.
 func (m *Mover) alreadyMovedText(threadID int64) string {
@@ -266,7 +308,7 @@ func (m *Mover) alreadyMovedText(threadID int64) string {
 }
 
 func (m *Mover) threadURL(threadID int64) string {
-	return m.d.BaseURL + "/threads/" + strconv.FormatInt(threadID, 10)
+	return m.d.BaseURL + forum.ThreadPath(threadID)
 }
 
 // tell sends a member a direct message from the bot.
@@ -302,7 +344,6 @@ var (
 		regexp.MustCompile(`(^|[^\pL\pN])~(\S(?:[^~]*\S)?)~([^\pL\pN]|$)`),
 		regexp.MustCompile("(^|[^\\pL\\pN])`([^`]+)`([^\\pL\\pN]|$)"),
 	}
-	titleEntities = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">")
 )
 
 // titleLine returns the first line of a Slack post that has words on it,
@@ -361,7 +402,7 @@ func titleFromPost(text string, users *userCache) string {
 			line = stripped
 		}
 	}
-	line = strings.Join(strings.Fields(titleEntities.Replace(line)), " ")
+	line = strings.Join(strings.Fields(markdown.UnescapeSlack(line)), " ")
 
 	if r := []rune(line); len(r) > slackx.MoveTitleMaxLen {
 		line = strings.TrimSpace(string(r[:slackx.MoveTitleMaxLen]))

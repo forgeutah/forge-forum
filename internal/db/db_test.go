@@ -26,9 +26,9 @@ func TestOpen_FreshDatabase_AppliesMigrationsOnce(t *testing.T) {
 	ctx := context.Background()
 	d, path := openTest(t)
 
-	first, err := d.AppliedMigrations(ctx)
+	first, err := d.appliedMigrations(ctx)
 	if err != nil {
-		t.Fatalf("AppliedMigrations: %v", err)
+		t.Fatalf("appliedMigrations: %v", err)
 	}
 	if len(first) == 0 {
 		t.Fatal("no migrations applied to a fresh database")
@@ -45,7 +45,7 @@ func TestOpen_FreshDatabase_AppliesMigrationsOnce(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer d2.Close()
-	second, _ := d2.AppliedMigrations(ctx)
+	second, _ := d2.appliedMigrations(ctx)
 	if len(second) != len(first) {
 		t.Errorf("migrations after reopen = %d, want %d", len(second), len(first))
 	}
@@ -104,4 +104,22 @@ func TestSchema_SlackSourceUnique(t *testing.T) {
 	if err := insert(); err == nil {
 		t.Error("second insert of the same Slack thread succeeded, want unique violation")
 	}
+}
+
+// appliedMigrations returns the names of applied migrations.
+func (d *DB) appliedMigrations(ctx context.Context) ([]string, error) {
+	rows, err := d.reader.QueryContext(ctx, `SELECT name FROM schema_migrations ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }

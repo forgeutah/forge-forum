@@ -45,7 +45,7 @@ func run() error {
 	}
 	defer database.Close()
 
-	handler, startBackground, err := build(ctx, cfg, database, logger)
+	handler, startBackground, stopBackground, err := build(ctx, cfg, database, logger)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,12 @@ func run() error {
 	case <-ctx.Done():
 	}
 
+	// One 30-second budget covers the HTTP server and then the background
+	// work; the systemd unit allows 31 seconds before it kills the process.
+	// The database is closed (deferred above) only after both.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+	stopBackground(shutdownCtx)
+	return err
 }

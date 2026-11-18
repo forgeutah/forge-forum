@@ -128,11 +128,26 @@ func (s *Store) importResolveConflict(ctx context.Context, in ImportInput, cause
 // importInsertTx writes the thread, its imported replies, and the
 // link-back notification.
 func (s *Store) importInsertTx(ctx context.Context, tx *sql.Tx, in ImportInput) (int64, error) {
-	authorID, err := identity.EnsureBySlackID(ctx, tx, in.AuthorSlackID, in.AuthorName, in.AuthorAvatar)
+	// Each Slack user is resolved once per import. The first details seen
+	// for a user are the ones a new member row gets.
+	now := s.now()
+	members := map[string]int64{}
+	ensure := func(slackUserID, name, avatar string) (int64, error) {
+		if id, ok := members[slackUserID]; ok {
+			return id, nil
+		}
+		id, err := identity.EnsureBySlackID(ctx, tx, slackUserID, name, avatar, now)
+		if err != nil {
+			return 0, err
+		}
+		members[slackUserID] = id
+		return id, nil
+	}
+	authorID, err := ensure(in.AuthorSlackID, in.AuthorName, in.AuthorAvatar)
 	if err != nil {
 		return 0, err
 	}
-	moverID, err := identity.EnsureBySlackID(ctx, tx, in.MoverSlackID, in.MoverName, in.MoverAvatar)
+	moverID, err := ensure(in.MoverSlackID, in.MoverName, in.MoverAvatar)
 	if err != nil {
 		return 0, err
 	}
@@ -165,7 +180,7 @@ func (s *Store) importInsertTx(ctx context.Context, tx *sql.Tx, in ImportInput) 
 	}
 
 	for _, r := range in.Replies {
-		replyAuthor, err := identity.EnsureBySlackID(ctx, tx, r.SlackUserID, r.AuthorName, r.AuthorAvatar)
+		replyAuthor, err := ensure(r.SlackUserID, r.AuthorName, r.AuthorAvatar)
 		if err != nil {
 			return 0, err
 		}

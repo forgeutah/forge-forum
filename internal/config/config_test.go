@@ -5,7 +5,10 @@ import (
 	"testing"
 )
 
-const goodSecret = "0123456789abcdef0123456789abcdef"
+const (
+	goodSecret = "0123456789abcdef0123456789abcdef"
+	goodToken  = "forum-service-token-0123456789abcdef"
+)
 
 func env(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
@@ -81,21 +84,83 @@ func TestLoad_SlackAndAnthropicAbsent_FeaturesOff(t *testing.T) {
 	}
 
 	m := base()
-	m["SLACK_BOT_TOKEN"], m["SLACK_APP_TOKEN"] = "xoxb-1", "xapp-1"
+	m["FORGE_BOT_URL"], m["FORGE_BOT_TOKEN"] = "http://forge-bot:8080/", goodToken
 	c, err = Load(env(m))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if !c.SlackEnabled() || c.MoveEnabled() {
-		t.Errorf("with Slack only: SlackEnabled=%v MoveEnabled=%v", c.SlackEnabled(), c.MoveEnabled())
+		t.Errorf("with the bot only: SlackEnabled=%v MoveEnabled=%v", c.SlackEnabled(), c.MoveEnabled())
+	}
+	if c.ForgeBotURL != "http://forge-bot:8080" || c.ForgeBotToken != goodToken {
+		t.Errorf("ForgeBotURL = %q, ForgeBotToken = %q; want the trailing slash trimmed and the token kept", c.ForgeBotURL, c.ForgeBotToken)
+	}
+
+	m["ANTHROPIC_API_KEY"] = "sk-ant-test"
+	c, err = Load(env(m))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.SlackEnabled() || !c.MoveEnabled() {
+		t.Errorf("with the bot and a classifier key: SlackEnabled=%v MoveEnabled=%v", c.SlackEnabled(), c.MoveEnabled())
 	}
 }
 
-// TestLoad_OneSlackToken_Rejected checks the tokens must come as a pair.
-func TestLoad_OneSlackToken_Rejected(t *testing.T) {
+// TestLoad_AnthropicKeyWithoutBot_MoveOff checks a classifier key alone
+// does not turn on Move to forum.
+func TestLoad_AnthropicKeyWithoutBot_MoveOff(t *testing.T) {
 	m := base()
-	m["SLACK_BOT_TOKEN"] = "xoxb-1"
-	if _, err := Load(env(m)); err == nil {
-		t.Fatal("Load succeeded with one Slack token")
+	m["ANTHROPIC_API_KEY"] = "sk-ant-test"
+	c, err := Load(env(m))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.SlackEnabled() || c.MoveEnabled() {
+		t.Errorf("SlackEnabled=%v MoveEnabled=%v, want both false", c.SlackEnabled(), c.MoveEnabled())
+	}
+}
+
+// TestLoad_OneBotSetting_Rejected checks the bot URL and token must come
+// as a pair.
+func TestLoad_OneBotSetting_Rejected(t *testing.T) {
+	for _, key := range []string{"FORGE_BOT_URL", "FORGE_BOT_TOKEN"} {
+		m := base()
+		m["FORGE_BOT_URL"], m["FORGE_BOT_TOKEN"] = "http://forge-bot:8080", goodToken
+		delete(m, key)
+		if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), "must be set together") {
+			t.Errorf("without %s: got %v, want a must-be-set-together error", key, err)
+		}
+	}
+}
+
+// TestLoad_BadBotSettings_Rejected checks the bot URL must be an http(s)
+// URL and the token at least 32 characters.
+func TestLoad_BadBotSettings_Rejected(t *testing.T) {
+	cases := map[string]struct{ url, token, want string }{
+		"no scheme":    {"forge-bot:8080", goodToken, "FORGE_BOT_URL"},
+		"other scheme": {"ws://forge-bot:8080", goodToken, "FORGE_BOT_URL"},
+		"no host":      {"http://", goodToken, "FORGE_BOT_URL"},
+		"short token":  {"http://forge-bot:8080", strings.Repeat("t", 31), "FORGE_BOT_TOKEN is shorter than 32"},
+	}
+	for name, tc := range cases {
+		m := base()
+		m["FORGE_BOT_URL"], m["FORGE_BOT_TOKEN"] = tc.url, tc.token
+		if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want an error naming %q", name, err, tc.want)
+		}
+	}
+}
+
+// TestLoad_OldSlackTokens_Ignored checks the settings the forum no longer
+// reads do not turn Slack on.
+func TestLoad_OldSlackTokens_Ignored(t *testing.T) {
+	m := base()
+	m["SLACK_BOT_TOKEN"], m["SLACK_APP_TOKEN"] = "xoxb-1", "xapp-1"
+	c, err := Load(env(m))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.SlackEnabled() {
+		t.Error("SlackEnabled with only the old token settings")
 	}
 }

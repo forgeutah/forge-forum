@@ -41,6 +41,16 @@ func importInput() ImportInput {
 	}
 }
 
+// newImportStore returns a store with notifications on, as in production,
+// so an import that announced or sent reply messages would leave extra
+// outbox rows.
+func newImportStore(t *testing.T) (*Store, *db.DB) {
+	t.Helper()
+	s, d := newTestStore(t)
+	s.SetNotifier(Notifier{BaseURL: "https://forum.test", AnnounceChannel: "C0ANNOUNCE"})
+	return s, d
+}
+
 // importCount returns the number of rows in table.
 func importCount(t *testing.T, d *db.DB, table string) int {
 	t.Helper()
@@ -53,7 +63,7 @@ func importCount(t *testing.T, d *db.DB, table string) int {
 
 // TestStore_ImportSlackThread_CreatesThreadRepliesAndLinkBack checks the whole move lands in one go.
 func TestStore_ImportSlackThread_CreatesThreadRepliesAndLinkBack(t *testing.T) {
-	s, d := newTestStore(t)
+	s, d := newImportStore(t)
 	ctx := context.Background()
 	in := importInput()
 
@@ -123,6 +133,15 @@ func TestStore_ImportSlackThread_CreatesThreadRepliesAndLinkBack(t *testing.T) {
 		t.Errorf("members = %d, want 3 (asker, mover, one replier)", n)
 	}
 
+	// Rae's reply answers Ada, who has reply messages on: were the importer
+	// to send them, or to announce the thread, there would be more rows.
+	var askerWantsDMs bool
+	if err := d.Reader().QueryRow(`SELECT dm_replies FROM members WHERE slack_user_id = 'UASKER'`).Scan(&askerWantsDMs); err != nil || !askerWantsDMs {
+		t.Fatalf("original poster's dm_replies = %v, %v; want on", askerWantsDMs, err)
+	}
+	if n := importCount(t, d, "notifications"); n != 1 {
+		t.Fatalf("notifications = %d, want only the link-back", n)
+	}
 	var kind, payload string
 	if err := d.Reader().QueryRow(`SELECT kind, payload FROM notifications`).Scan(&kind, &payload); err != nil {
 		t.Fatalf("notification: %v", err)
@@ -142,14 +161,11 @@ func TestStore_ImportSlackThread_CreatesThreadRepliesAndLinkBack(t *testing.T) {
 			t.Errorf("link-back text %q lacks %q", msg.Text, want)
 		}
 	}
-	if n := importCount(t, d, "notifications"); n != 1 {
-		t.Errorf("notifications = %d, want 1", n)
-	}
 }
 
 // TestStore_ImportSlackThread_SecondMoveReturnsExisting checks a moved Slack thread is never imported twice.
 func TestStore_ImportSlackThread_SecondMoveReturnsExisting(t *testing.T) {
-	s, d := newTestStore(t)
+	s, d := newImportStore(t)
 	ctx := context.Background()
 	first, _, err := s.ImportSlackThread(ctx, importInput())
 	if err != nil {
@@ -177,7 +193,7 @@ func TestStore_ImportSlackThread_SecondMoveReturnsExisting(t *testing.T) {
 
 // TestStore_ImportSlackThread_RaceYieldsOneThread checks two moves of one Slack thread at once create one forum thread.
 func TestStore_ImportSlackThread_RaceYieldsOneThread(t *testing.T) {
-	s, d := newTestStore(t)
+	s, d := newImportStore(t)
 	const movers = 4
 	ids := make([]int64, movers)
 	existing := make([]bool, movers)
@@ -212,7 +228,7 @@ func TestStore_ImportSlackThread_RaceYieldsOneThread(t *testing.T) {
 
 // TestStore_ImportSlackThread_UniqueIndexLoserGetsExisting checks the unique index, not only the lookup, stops a duplicate.
 func TestStore_ImportSlackThread_UniqueIndexLoserGetsExisting(t *testing.T) {
-	s, d := newTestStore(t)
+	s, d := newImportStore(t)
 	ctx := context.Background()
 	first, _, err := s.ImportSlackThread(ctx, importInput())
 	if err != nil {
@@ -241,7 +257,7 @@ func TestStore_ImportSlackThread_UniqueIndexLoserGetsExisting(t *testing.T) {
 
 // TestStore_ImportSlackThread_RemovedThreadStillCountsAsMoved checks a removed forum thread still blocks a second move.
 func TestStore_ImportSlackThread_RemovedThreadStillCountsAsMoved(t *testing.T) {
-	s, d := newTestStore(t)
+	s, d := newImportStore(t)
 	ctx := context.Background()
 	first, _, err := s.ImportSlackThread(ctx, importInput())
 	if err != nil {
@@ -274,7 +290,7 @@ func TestStore_ImportSlackThread_ValidationWritesNothing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, d := newTestStore(t)
+			s, d := newImportStore(t)
 			in := importInput()
 			tc.edit(&in)
 			_, _, err := s.ImportSlackThread(context.Background(), in)
@@ -293,7 +309,7 @@ func TestStore_ImportSlackThread_ValidationWritesNothing(t *testing.T) {
 
 // TestStore_ImportSlackThread_KeepsExistingMemberProfile checks an author who already signed in keeps their own name.
 func TestStore_ImportSlackThread_KeepsExistingMemberProfile(t *testing.T) {
-	s, d := newTestStore(t)
+	s, d := newImportStore(t)
 	ctx := context.Background()
 	asker := addMember(t, d, "UASKER", "Ada (signed in)")
 

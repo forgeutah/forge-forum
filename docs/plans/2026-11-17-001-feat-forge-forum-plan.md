@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** Give Forge Utah members a forum for long-running discussions, with nested replies ranked by upvotes, reachable from Slack and able to take over a Slack thread that has outgrown Slack.
-- **Means:** One Go service with SQLite behind forge-proxy, talking to Slack over Socket Mode, deployed to an exe.dev VM (KTD1, KTD5, KTD10).
+- **Means:** One Go service with SQLite behind forge-proxy, talking to Slack through forge-bot, deployed to an exe.dev VM (KTD1, KTD5, KTD10).
 - **Product authority:** This plan owns the forum and the first-level "Move to forum" action. Full reply-tree conversion of Slack threads and the forum-generated wiki are surrounding work, not active scope. On product behaviour the Requirements win; on mechanism the Key Technical Decisions win.
 - **Stop conditions:** Stop and report if forge-proxy's upstream contract cannot be met as written, or if a requirement can only be met by exposing the forum to the public internet.
 - **Execution profile:** Greenfield repository. Build in unit order; each unit lands with its tests passing.
@@ -207,13 +207,13 @@ Product Contract preservation: changed: R14, R11 — the two questions deferred 
 - KTD1. **One Go binary, standard library HTTP, server-rendered HTML.** This mirrors forge-proxy's stack (Go, `net/http` mux, embedded assets, `log/slog`) so Forge volunteers maintain one style. Pages are `html/template` with plain form posts; there is no JavaScript build and no client framework, which also avoids the `unsafe-eval` CSP forge-proxy's in-browser JSX forces.
 - KTD2. **SQLite through `modernc.org/sqlite`, with a writer pool of one and a read pool.** Same driver and pragmas as forge-proxy (WAL, `foreign_keys`, `busy_timeout`, `BEGIN IMMEDIATE` writes). Migrations are embedded SQL files applied at startup by a small in-repo runner; goose is not added because the forum needs only forward migrations.
 - KTD3. **Members are keyed on Slack user ID, not `X-Forge-User-Id`.** forge-proxy creates a user row only at first sign-in and offers no lookup, so R15 and R16 authors who never signed in have no Forge user ID. The forum keeps its own member table keyed on Slack user ID and records the Forge user ID when that member first arrives. This departs from the proxy contract's advice to key on `X-Forge-User-Id`. Serves R2, R15, R16.
-- KTD4. **Every request except the health check must pass the proxy contract.** The forum compares `X-Forge-Proxy-Secret` in constant time against a comma-separated list of accepted secrets, checks `X-Forge-Slack-Team-Id` against the configured workspace, and decodes `X-Forge-Name` per RFC 8187. Admin rights come from `X-Forge-Roles` containing the configured admin role. Serves R1, R21.
-- KTD5. **Slack reaches the forum over Socket Mode.** forge-proxy passes nothing without a session, so Slack cannot call a forum URL. The forum opens one outbound connection using `github.com/slack-go/slack/socketmode`, behind an in-repo interface so tests use a fake. When Slack tokens are not configured the forum runs with Slack features off and logs that once. Serves R11, R12, R14–R20.
+- KTD4. **Every request except the health check and forge-bot's interactions endpoint (KTD5) must pass the proxy contract.** The forum compares `X-Forge-Proxy-Secret` in constant time against a comma-separated list of accepted secrets, checks `X-Forge-Slack-Team-Id` against the configured workspace, and decodes `X-Forge-Name` per RFC 8187. Admin rights come from `X-Forge-Roles` containing the configured admin role. Serves R1, R21.
+- KTD5. **The forum reaches Slack through forge-bot.** forge-proxy passes nothing without a session, so Slack cannot call a forum URL, and the workspace uses one Slack app for all Forge services. forge-bot, a separate service, therefore holds the Socket Mode connection and the bot token; the forum holds no Slack token. The bot posts the interactions the forum owns (the "Move to forum" shortcut and its dialog) to `POST /internal/slack/interactions`, an endpoint outside the proxy contract whose only gate is the forum's service token as a bearer token, compared in constant time. The forum calls Slack's Web API at the bot's `/slack/api/<method>` with the same token, using `github.com/slack-go/slack` behind an in-repo interface so tests use a fake. Both directions run over the Forge tailnet and follow forge-bot's service contract. With the bot's URL and token unset the forum runs with Slack features off and logs that once. Serves R11, R12, R14–R20.
 - KTD6. **Notifications go through an outbox table.** The row is written in the same transaction as the post, and a background worker delivers it with bounded retries. A Slack outage therefore never fails a post or loses a notification silently. Serves R11, R12, R18.
 - KTD7. **A move is one background job and one database transaction.** The shortcut handler only validates and opens the dialog. After submission the job reads the Slack thread, classifies replies, and writes the thread and its imported replies together; a unique key on Slack channel and thread timestamp makes a second move return the existing thread. If reading or classifying fails, nothing is imported and the mover is told in Slack. Serves R14–R20.
 - KTD8. **Reply classification uses Claude Haiku 5.5 with a JSON schema output.** The Anthropic Go SDK's structured output returns one verdict per Slack message ID. Slack text is passed as delimited untrusted data, the model has no tools, and the forum rejects any ID it did not send. A reply the model does not mark as direct stays in Slack, which is the safe side of R17. The model ID is a setting.
 - KTD9. **Replies are an adjacency list ordered in Go.** One query loads a thread's replies; the tree is built in memory and siblings sorted by score then age. Scores are a cached column updated in the same transaction as the vote row. Serves R7, R8, R9.
-- KTD10. **Deployment is a static binary under systemd on an exe.dev VM.** Config comes from a root-owned env file, data lives under `/var/lib/forge-forum`, and the VM joins the Forge tailnet so forge-proxy can reach port 8080. Litestream replication is documented as an optional sidecar, matching forge-proxy.
+- KTD10. **Deployment is a static binary under systemd on an exe.dev VM.** Config comes from a root-owned env file, data lives under `/var/lib/forge-forum`, and the VM joins the Forge tailnet so forge-proxy and forge-bot can reach port 8080 and the forum can reach forge-bot. Litestream replication is documented as an optional sidecar, matching forge-proxy.
 - KTD11. **Post bodies are stored as Markdown and rendered with goldmark, then sanitized.** Raw HTML is disabled and output passes through bluemonday. Imported Slack text is converted from mrkdwn by an in-repo converter because no maintained Go library does that direction. Serves R5, R15, R16.
 - KTD12. **Deletion is soft.** A deleted reply with replies under it renders as the R10 placeholder; one with none disappears. A deleted or admin-removed thread leaves the feed and its URL shows a removed notice.
 
@@ -224,26 +224,34 @@ flowchart TB
   B[Member browser] -->|HTTPS| P[forge-proxy]
   P -->|tailnet HTTP + X-Forge headers| F[forge-forum]
   F --- D[(SQLite)]
-  F -->|outbound WebSocket: Socket Mode| S[Slack]
-  F -->|Web API: post, DM, read thread| S
+  G[forge-bot] ---|Socket Mode and Web API, with the bot token| S[Slack]
+  G -->|tailnet HTTP: interactions, service token| F
+  F -->|tailnet HTTP: Slack Web API calls, service token| G
   F -->|classify replies| C[Claude API]
   O[outbox worker] --- D
-  O --> S
+  O -->|post, DM| G
 ```
 
 ```mermaid
 sequenceDiagram
   participant M as Member in Slack
   participant S as Slack
+  participant G as forge-bot
   participant F as forge-forum
   participant C as Claude API
+  Note over F,S: every forum call to Slack passes through forge-bot
   M->>S: Move to forum (message shortcut)
-  S->>F: shortcut event (Socket Mode)
-  F->>S: ack, check channel is public and thread not moved
+  S->>G: shortcut event (Socket Mode)
+  G->>S: ack
+  G->>F: POST shortcut (service token)
+  F->>S: check channel is public and thread not moved
   F->>S: open dialog (title pre-filled, tags)
+  F-->>G: 200
   M->>S: submit
-  S->>F: view submission
-  F->>S: ack
+  S->>G: view submission
+  G->>F: POST submission (service token)
+  F-->>G: field errors, or none
+  G->>S: ack with that answer
   F->>S: read thread replies
   F->>C: classify replies as direct or not
   C-->>F: verdict per message
@@ -260,7 +268,7 @@ internal/db/            open, pools, migrations/*.sql, migration runner
 internal/identity/      proxy-contract middleware, member upsert
 internal/forum/         threads, replies, votes, tags, tree building
 internal/markdown/      render + sanitize, Slack mrkdwn conversion
-internal/slackx/        Slack interface, real client, fake, Socket Mode loop
+internal/slackx/        Slack interface, real client, fake, forge-bot interactions endpoint
 internal/notify/        outbox writer and worker
 internal/move/          move job, classifier interface, Claude classifier
 internal/web/           handlers, templates/*.html, assets/ (CSS, logo)
@@ -270,14 +278,14 @@ deploy/                 forge-forum.service, env example, runbook
 ### Assumptions
 
 - The forum is served at `forum.<base domain>`; forge-proxy's docs use both `forgeutah.tech` and `forgeut.dev`, so the public base URL is a setting.
-- Forge can create a second Slack app with a bot user and supply an Anthropic API key.
+- Forge runs forge-bot with the workspace's Slack app, registers the forum in it, and supplies an Anthropic API key.
 - Guests in the Slack workspace get the same access as members, as they do through forge-proxy.
 
 ### Risks
 
-- slack-go labels its Socket Mode handler experimental. The in-repo interface (KTD5) limits a replacement to one package.
+- Slack features depend on forge-bot being up. While it is down, posts still succeed, queued messages wait in the outbox and retry (KTD6), and "Move to forum" does not work.
 - Whether a shortcut invoked on a reply carries the thread root timestamp is unverified in Slack's docs. U7 resolves the root by reading the thread from the invoked message.
-- Events sent while the Socket Mode connection is down are not redelivered. A missed shortcut shows the member a Slack error and they retry.
+- An interaction that arrives while the forum is down or restarting is not redelivered. forge-bot tells the member it did not work and they retry.
 
 ---
 
@@ -315,7 +323,7 @@ deploy/                 forge-forum.service, env example, runbook
 
 **Files:** `internal/identity/middleware.go`, `internal/identity/members.go`, `internal/identity/identity_test.go`
 
-**Approach:** Middleware validates the secret, team, and contract version, decodes the name, upserts the member by Slack user ID, attaches the Forge user ID, and puts the member and admin flag in the request context. Name and avatar refresh from headers on each request.
+**Approach:** Middleware validates the secret, team, and contract version, decodes the name, upserts the member by Slack user ID, attaches the Forge user ID, and puts the member and admin flag in the request context. A changed name or avatar is stored at once; an unchanged member is rewritten at most once a minute, so ordinary requests do not take the writer.
 
 **Test scenarios:**
 - Covers AE1. A request with no secret, a wrong secret, or a wrong team ID gets 401 and no page content.
@@ -380,9 +388,9 @@ deploy/                 forge-forum.service, env example, runbook
 
 **Dependencies:** U4.
 
-**Files:** `internal/slackx/client.go`, `internal/slackx/fake.go`, `internal/notify/outbox.go`, `internal/notify/worker.go`, `internal/notify/notify_test.go`, `internal/web/settings.go`, `internal/web/templates/settings.html`
+**Files:** `internal/config/config.go`, `internal/slackx/client.go`, `internal/slackx/fake.go`, `internal/notify/outbox.go`, `internal/notify/worker.go`, `internal/notify/notify_test.go`, `internal/web/settings.go`, `internal/web/templates/settings.html`
 
-**Approach:** Thread creation enqueues an announcement; reply creation enqueues a direct message to the parent post's author unless that author is the replier or has turned messages off. The worker claims pending rows, sends, and marks them sent or retries with backoff up to a cap. Message wording follows the canvas Slack touchpoints board.
+**Approach:** The Slack client sends every Web API call to forge-bot with the forum's service token (KTD5). Thread creation enqueues an announcement; reply creation enqueues a direct message to the parent post's author unless that author is the replier or has turned messages off. The worker claims pending rows, sends, and marks them sent or retries with backoff up to a cap. Message wording follows the canvas Slack touchpoints board.
 
 **Test scenarios:**
 - Creating a thread on the forum enqueues one announcement carrying title, author, tags, and link; the fake client receives it.
@@ -423,9 +431,9 @@ deploy/                 forge-forum.service, env example, runbook
 
 **Dependencies:** U5, U6.
 
-**Files:** `internal/slackx/socket.go`, `internal/move/handler.go`, `internal/move/job.go`, `internal/move/move_test.go`, `internal/forum/import.go`
+**Files:** `internal/slackx/inbound.go`, `internal/slackx/inbound_test.go`, `cmd/forge-forum/build.go`, `internal/move/handler.go`, `internal/move/job.go`, `internal/move/move_test.go`, `internal/forum/import.go`
 
-**Approach:** The Socket Mode loop routes the shortcut and the dialog submission to the move handler and acknowledges each before any other work. The handler resolves the thread root from the invoked message, refuses non-public channels, and answers an already-moved thread with its link. The job follows KTD7, creates member rows for unseen Slack authors from Slack profile data, marks imported posts, records the count left in Slack, and enqueues the link-back in place of the announcement.
+**Approach:** forge-bot acknowledges each interaction to Slack and posts it to the forum's interactions endpoint, which checks the bearer token and routes the shortcut and the dialog submission to the move handler. A shortcut answers 200 once the dialog is open, or 500 so the bot tells the member; a submission answers with its field errors, or none, well inside the 2.5 seconds the bot waits. The handler resolves the thread root from the invoked message, refuses non-public channels, and answers an already-moved thread with its link. The job follows KTD7, creates member rows for unseen Slack authors from Slack profile data, marks imported posts, records the count left in Slack, and enqueues the link-back in place of the announcement.
 
 **Test scenarios:**
 - Covers AE5. A 50-reply thread where the fake classifier marks 12 direct yields a forum thread with the original post as body, 12 first-level replies in original order under their authors, and "38 remain" recorded.
@@ -436,6 +444,7 @@ deploy/                 forge-forum.service, env example, runbook
 - The shortcut invoked on a reply moves the whole thread from its root.
 - The classifier failing leaves no thread and tells the mover it failed.
 - A submission with no tag selected returns a dialog validation error.
+- An interaction without the service token is refused with 401 and reaches no handler; with "Move to forum" off the endpoint answers 404.
 
 **Verification:** With fakes for Slack and the classifier, the whole move runs end to end in a test.
 
@@ -449,7 +458,7 @@ deploy/                 forge-forum.service, env example, runbook
 
 **Files:** `deploy/forge-forum.service`, `deploy/forge-forum.env.example`, `deploy/RUNBOOK.md`, `deploy/litestream.yml`, `Makefile`
 
-**Approach:** Build a static Linux binary, install it with the systemd unit and env file, and start it. The runbook lists what needs Forge credentials: the shared proxy secret, the Slack app and its tokens, the Anthropic key, joining the tailnet, adding the host to forge-proxy's `UPSTREAMS`, and DNS.
+**Approach:** Build a static Linux binary, install it with the systemd unit and env file, and start it. The runbook lists what needs Forge credentials: the shared proxy secret, the forum's forge-bot registration and service token, the Anthropic key, joining the tailnet, adding the host to forge-proxy's `UPSTREAMS`, and DNS.
 
 **Execution note:** This is packaging and operations; prove it with a runtime smoke check on the VM, not unit tests.
 

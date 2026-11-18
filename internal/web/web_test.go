@@ -398,10 +398,10 @@ func TestServer_Feed_TagFilter_OnlyThreadsCarryingIt(t *testing.T) {
 // past the end.
 func TestServer_Feed_Pagination(t *testing.T) {
 	a := newApp(t)
-	for i := 1; i <= pageSize+3; i++ {
+	for i := 1; i <= forum.DefaultPageSize+3; i++ {
 		a.createThread(sam, fmt.Sprintf("Numbered thread %02d.", i), "Body", "go")
 	}
-	first := fmt.Sprintf("Numbered thread %02d.", pageSize+3)
+	first := fmt.Sprintf("Numbered thread %02d.", forum.DefaultPageSize+3)
 
 	body := a.get(sam, "/?tag=go").Body.String()
 	wantContains(t, body, first, "Numbered thread 04.", `href="/?page=2&amp;tag=go"`)
@@ -571,7 +571,7 @@ func TestServer_NewThreadForm_ListsActiveTagsAndSlackNote(t *testing.T) {
 	wantNotContains(t, body, `value="careers"`, "Posting announces this thread in Slack")
 
 	withSlack := newApp(t, func(c *config.Config) {
-		c.SlackBotToken, c.SlackAppToken, c.SlackAnnounceChannel = "xoxb-x", "xapp-x", "C0ANNOUNCE"
+		c.ForgeBotURL, c.ForgeBotToken, c.SlackAnnounceChannel = "http://forge-bot.test:8080", "forum-service-token-0123456789abcdef", "C0ANNOUNCE"
 	})
 	wantContains(t, withSlack.get(sam, "/threads/new").Body.String(),
 		"Posting announces this thread in Slack with its title, tags, and a link.")

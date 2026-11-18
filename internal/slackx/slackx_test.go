@@ -38,7 +38,7 @@ func newStubSlack(t *testing.T, respond func(c apiCall, n int) (int, http.Header
 	s := &stubSlack{t: t, respond: respond}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(srv.Close)
-	return s, NewClient("xoxb-test", srv.URL, srv.Client())
+	return s, NewClient("forum-service-token-for-tests-0123456789", srv.URL, srv.Client())
 }
 
 func (s *stubSlack) serve(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +233,109 @@ func TestRealClient_ThreadReplies_ReplyTS_ResolvesToRoot(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].TS != "1.0" || got[1].TS != "2.0" {
 		t.Errorf("messages = %+v, want the root then the reply", got)
+	}
+}
+
+// TestRealClient_ThreadRoot_RootTS_AsksForOneMessage checks the root is
+// read with a single request limited to one message.
+func TestRealClient_ThreadRoot_RootTS_AsksForOneMessage(t *testing.T) {
+	roots := map[string]string{
+		"threaded":       `{"type":"message","user":"U1","text":"root","ts":"1.0","thread_ts":"1.0"}`,
+		"without thread": `{"type":"message","user":"U1","text":"root","ts":"1.0"}`,
+	}
+	for name, root := range roots {
+		t.Run(name, func(t *testing.T) {
+			s, c := newStubSlack(t, func(apiCall, int) (int, http.Header, string) {
+				return ok(`{"ok":true,"has_more":true,"response_metadata":{"next_cursor":"page2"},"messages":[` + root + `]}`)
+			})
+
+			got, err := c.ThreadRoot(context.Background(), "C1", "1.0")
+			if err != nil {
+				t.Fatalf("ThreadRoot: %v", err)
+			}
+			if got.User != "U1" || got.Text != "root" || got.TS != "1.0" {
+				t.Errorf("root = %+v, want the original post", got)
+			}
+			call := s.only("conversations.replies")
+			if call.Form.Get("limit") != "1" || call.Form.Get("ts") != "1.0" || call.Form.Get("channel") != "C1" || call.Form.Get("cursor") != "" {
+				t.Errorf("request = %v, want channel C1, ts 1.0, limit 1 and no cursor", call.Form)
+			}
+		})
+	}
+}
+
+// TestRealClient_ThreadRoot_ReplyTS_RedirectsToRoot checks that asking
+// about a reply costs one more one-message request, at the root it names.
+func TestRealClient_ThreadRoot_ReplyTS_RedirectsToRoot(t *testing.T) {
+	s, c := newStubSlack(t, func(call apiCall, _ int) (int, http.Header, string) {
+		if call.Form.Get("ts") == "2.0" {
+			return ok(`{"ok":true,"messages":[{"type":"message","user":"U2","text":"first","ts":"2.0","thread_ts":"1.0"}]}`)
+		}
+		return ok(`{"ok":true,"has_more":true,"response_metadata":{"next_cursor":"page2"},"messages":[
+			{"type":"message","subtype":"bot_message","bot_id":"B9","text":"root","ts":"1.0","thread_ts":"1.0"}]}`)
+	})
+
+	got, err := c.ThreadRoot(context.Background(), "C1", "2.0")
+	if err != nil {
+		t.Fatalf("ThreadRoot: %v", err)
+	}
+	want := Message{BotID: "B9", Text: "root", TS: "1.0", ThreadTS: "1.0", SubType: "bot_message"}
+	if got != want {
+		t.Errorf("root = %+v, want %+v", got, want)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(s.calls))
+	}
+	for i, wantTS := range []string{"2.0", "1.0"} {
+		form := s.calls[i].Form
+		if s.calls[i].Method != "conversations.replies" || form.Get("ts") != wantTS || form.Get("limit") != "1" || form.Get("cursor") != "" {
+			t.Errorf("call %d = %s %v, want conversations.replies at ts %s with limit 1", i+1, s.calls[i].Method, form, wantTS)
+		}
+	}
+}
+
+// TestRealClient_ThreadRoot_Failures_AreSlackErrors checks a Slack error
+// and an empty answer both come back as an error code.
+func TestRealClient_ThreadRoot_Failures_AreSlackErrors(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		"slack error": {`{"ok":false,"error":"thread_not_found"}`, ErrThreadNotFound},
+		"no messages": {`{"ok":true,"messages":[]}`, ErrThreadNotFound},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, c := newStubSlack(t, func(apiCall, int) (int, http.Header, string) { return ok(tc.body) })
+			got, err := c.ThreadRoot(context.Background(), "C1", "1.0")
+			if ErrorCode(err) != tc.want || got != (Message{}) {
+				t.Errorf("ThreadRoot = %+v, %v; want no message and %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestRealClient_ThreadRoot_NotInChannel_JoinsOnceAndRetries checks the
+// root read joins a public channel the same way the full read does.
+func TestRealClient_ThreadRoot_NotInChannel_JoinsOnceAndRetries(t *testing.T) {
+	s, c := newStubSlack(t, func(call apiCall, n int) (int, http.Header, string) {
+		switch {
+		case call.Method == "conversations.join":
+			return ok(`{"ok":true,"channel":{"id":"C1","name":"general"}}`)
+		case n == 1:
+			return ok(`{"ok":false,"error":"not_in_channel"}`)
+		default:
+			return ok(`{"ok":true,"messages":[{"type":"message","user":"U1","text":"root","ts":"1.0"}]}`)
+		}
+	})
+
+	got, err := c.ThreadRoot(context.Background(), "C1", "1.0")
+	if err != nil || got.Text != "root" {
+		t.Fatalf("ThreadRoot = %+v, %v; want the root", got, err)
+	}
+	want := []string{"conversations.replies", "conversations.join", "conversations.replies"}
+	if methods := s.methods(); !reflect.DeepEqual(methods, want) {
+		t.Errorf("calls = %v, want %v", methods, want)
 	}
 }
 
@@ -568,6 +671,46 @@ func TestFake_ThreadReplies_ReplyTS_ResolvesToThread(t *testing.T) {
 	}
 	if _, err := f.ThreadReplies(ctx, "C1", "9.0"); ErrorCode(err) != "thread_not_found" {
 		t.Errorf("unknown ts error = %v, want thread_not_found", err)
+	}
+}
+
+// TestFake_ThreadRoot_ReplyTS_ReturnsFirstMessage checks a root or reply
+// ts yields the thread's first message, and the call is recorded.
+func TestFake_ThreadRoot_ReplyTS_ReturnsFirstMessage(t *testing.T) {
+	root := Message{User: "U1", Text: "root", TS: "1.0", ThreadTS: "1.0"}
+	f := &Fake{Threads: map[string][]Message{
+		ThreadKey("C1", "1.0"): {root, {User: "U2", Text: "reply", TS: "2.0", ThreadTS: "1.0"}},
+		ThreadKey("C2", "5.0"): {{User: "U3", Text: "other", TS: "5.0"}, {User: "U3", Text: "same ts elsewhere", TS: "2.0"}},
+		ThreadKey("C3", "7.0"): {},
+	}}
+	ctx := context.Background()
+
+	for _, ts := range []string{"1.0", "2.0"} {
+		got, err := f.ThreadRoot(ctx, "C1", ts)
+		if err != nil || got != root {
+			t.Errorf("ThreadRoot %s = %+v, %v; want the C1 root", ts, got, err)
+		}
+	}
+	for channel, ts := range map[string]string{"C1": "9.0", "C3": "7.0"} {
+		if got, err := f.ThreadRoot(ctx, channel, ts); ErrorCode(err) != ErrThreadNotFound || got != (Message{}) {
+			t.Errorf("ThreadRoot %s %s = %+v, %v; want thread_not_found", channel, ts, got, err)
+		}
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := f.ThreadRoot(cancelled, "C1", "1.0"); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled context error = %v, want context.Canceled", err)
+	}
+
+	want := []Call{
+		{Method: "ThreadRoot", Args: []string{"C1", "1.0"}},
+		{Method: "ThreadRoot", Args: []string{"C1", "2.0"}},
+	}
+	if got := f.Calls[:2]; !reflect.DeepEqual(got, want) {
+		t.Errorf("Calls = %+v, want %+v first", got, want)
+	}
+	if len(f.Calls) != 4 {
+		t.Errorf("Calls = %d, want 4: every call that reached the fake, none for the cancelled context", len(f.Calls))
 	}
 }
 
