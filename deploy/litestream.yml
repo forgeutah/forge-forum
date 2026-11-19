@@ -1,0 +1,14 @@
+# Optional: continuous SQLite replication to Cloudflare R2, the same
+# arrangement forge-proxy uses. Run Litestream as its own systemd unit
+# with R2_ACCOUNT_ID, LITESTREAM_ACCESS_KEY_ID and
+# LITESTREAM_SECRET_ACCESS_KEY in its environment. Keep the restore
+# (read) credential off the VM.
+dbs:
+  - path: /var/lib/forge-forum/forum.db
+    replicas:
+      - type: s3
+        bucket: forge-forum-backup
+        path: forum
+        endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+        sync-interval: 1s
+        retention: 720h

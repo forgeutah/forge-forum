@@ -1,0 +1,68 @@
+{{define "main"}}
+<main id="main" class="main main--feed">
+
+<header class="page-head page-head--split">
+<div class="page-head__text">
+<div class="fu-eyebrow eyebrow">&gt; threads</div>
+<h1 class="page-title">Forge Forum</h1>
+<p class="page-sub">Replies nest under what they answer. The most upvoted rise to the top.</p>
+</div>
+<div class="segmented" role="group" aria-label="Sort threads">
+<a href="{{.ActivityURL}}"{{if not .SortTop}} aria-current="true"{{end}}>recent activity</a>
+<a href="{{.TopURL}}"{{if .SortTop}} aria-current="true"{{end}}>most upvoted</a>
+</div>
+</header>
+
+<div id="tags" class="tag-filter" role="group" aria-label="Filter by tag">
+<span class="fu-label tag-filter__label">filter</span>
+<a class="tag-link" href="{{.AllURL}}"{{if not .Tag}} aria-current="true"{{end}}><span class="tag">#all</span></a>
+{{range .Tags -}}
+<a class="tag-link" href="{{.URL}}"{{if .Active}} aria-current="true"{{end}}><span class="tag">#{{.Slug}}</span></a>
+{{end -}}
+</div>
+
+{{if .Threads -}}
+<div class="thread-list">
+{{range .Threads}}
+<article class="thread-row" id="thread-{{.ID}}">
+{{template "vote" .Vote}}
+<div class="thread-row__body">
+<h2 class="thread-row__title"><a href="{{.URL}}">{{.Title}}</a></h2>
+<div class="tag-row">
+{{- range .Tags}}<span class="tag">#{{.}}</span>{{end}}
+{{- if .FromSlack}}<span class="badge badge--info">moved from slack</span>{{end -}}
+</div>
+<div class="meta">@{{.AuthorName}} ·
+{{if .ReplyCount -}}
+{{plural .ReplyCount "reply" "replies"}} · last reply <time datetime="{{isotime .LastActivityAt}}">{{reltime .LastActivityAt}}</time>
+{{- else -}}
+no replies yet · posted <time datetime="{{isotime .CreatedAt}}">{{reltime .CreatedAt}}</time>
+{{- end}}</div>
+</div>
+</article>
+{{end}}
+</div>
+
+{{if or .NewerURL .OlderURL -}}
+<nav class="pager" aria-label="Feed pages">
+{{if .NewerURL}}<a rel="prev" href="{{.NewerURL}}">← newer</a>{{else}}<span></span>{{end}}
+<span class="pager__page">page {{.PageNum}}</span>
+{{if .OlderURL}}<a rel="next" href="{{.OlderURL}}">older →</a>{{else}}<span></span>{{end}}
+</nav>
+{{- end}}
+{{- else -}}
+<p class="empty">
+{{- if gt .PageNum 1 -}}
+No more threads on this page. <a href="{{.FirstURL}}">Back to the first page</a>
+{{- else if .Tag -}}
+No threads tagged #{{.Tag}} yet. <a href="/threads/new">Start one</a>
+{{- else -}}
+No threads yet. <a href="/threads/new">Start the first one</a>
+{{- end -}}
+</p>
+{{- end}}
+
+<footer class="site-foot">Members only. Signed in with your Forge Utah Slack account.</footer>
+
+</main>
+{{end}}

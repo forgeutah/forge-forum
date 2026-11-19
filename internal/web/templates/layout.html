@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>{{.Title}} · Forge Forum</title>
+<link rel="icon" href="/assets/forge-icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/tokens.css">
+<link rel="stylesheet" href="/assets/forum.css">
+</head>
+<body class="fu-root">
+<a class="skip-link" href="#main">Skip to content</a>
+<nav class="nav" aria-label="Forum">
+<a class="nav__brand" href="/">
+<img src="/assets/forge-icon.svg" alt="" height="24">
+<span>forge<span class="nav__dot">.</span>utah<span class="nav__section"> / forum</span></span>
+</a>
+<div class="nav__links">
+<a href="/"{{if eq .Nav "feed"}} aria-current="page"{{end}}>feed</a>
+<a href="/#tags">tags</a>
+{{if .Member.IsAdmin}}<a href="/admin/tags"{{if eq .Nav "admin"}} aria-current="page"{{end}}>manage tags</a>{{end}}
+</div>
+<div class="nav__spacer"></div>
+{{if not .HideNewThread}}<a class="btn btn--primary btn--nav" href="/threads/new">New thread</a>{{end}}
+{{if .Member.AvatarURL -}}
+<img class="avatar avatar--nav" src="{{.Member.AvatarURL}}" alt="Signed in as {{.Member.Name}}" width="32" height="32" referrerpolicy="no-referrer">
+{{- else -}}
+<span class="avatar avatar--nav" role="img" aria-label="Signed in as {{.Member.Name}}">{{initials .Member.Name}}</span>
+{{- end}}
+<a class="nav__action" href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>settings</a>
+{{if .SignOutURL}}<a class="nav__action" href="{{.SignOutURL}}">sign out</a>{{end}}
+</nav>
+{{template "main" .}}
+</body>
+</html>
+{{- /* csrf renders the hidden token field. Every form that posts needs it.
+       Inside a range or with block, pass the root: template "csrf" $ */ -}}
+{{define "csrf"}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
+
+{{- /* vote renders one upvote button as its own form. It takes a voteView. */ -}}
+{{define "vote"}}<form class="vote-form" method="post" action="{{.Action}}">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<input type="hidden" name="vote" value="{{if .Voted}}off{{else}}on{{end}}">
+{{if .Return}}<input type="hidden" name="return" value="{{.Return}}">{{end -}}
+<button class="{{.Class}}{{if .Voted}} vote--on{{end}}" type="submit" aria-pressed="{{.Voted}}" aria-label="{{if .Voted}}Remove your upvote{{else}}Upvote{{end}}, {{plural .Score "upvote" "upvotes"}}"><span aria-hidden="true">▲</span><span aria-hidden="true">{{.Score}}</span></button>
+</form>{{end}}
+{{- /* form-error renders a validation message above a form's fields. */ -}}
+{{define "form-error"}}{{if . -}}
+<div class="alert alert--error" role="alert"><b class="alert__icon" aria-hidden="true">[ × ]</b><span id="form-error">{{.}}</span></div>
+{{- end}}{{end}}
