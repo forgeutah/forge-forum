@@ -10,6 +10,7 @@ package move
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -36,12 +37,24 @@ const (
 // jobTimeout bounds one move, from reading the Slack thread to the import.
 const jobTimeout = 3 * time.Minute
 
+// defaultTitleBudget is how long the dialog waits for a suggested title.
+// Slack expires the trigger three seconds after the click and the rest of
+// the path to an open dialog takes about one, so the wait is bounded well
+// short of that.
+const defaultTitleBudget = 1500 * time.Millisecond
+
 // Deps is what a Mover needs.
 type Deps struct {
 	Slack      slackx.Client
 	Store      *forum.Store
 	DB         *db.DB
 	Classifier Classifier
+	// Titles suggests the title the dialog opens with. Nil means the
+	// dialog opens with the start of the original post.
+	Titles TitleSuggester
+	// TitleBudget is the longest the dialog waits for a suggested title.
+	// It defaults to defaultTitleBudget.
+	TitleBudget time.Duration
 	// BaseURL is the forum's public base URL, with no trailing slash.
 	BaseURL string
 	// TeamID is the configured Slack workspace. Interactions from any
@@ -82,6 +95,9 @@ func New(d Deps) *Mover {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.TitleBudget <= 0 {
+		d.TitleBudget = defaultTitleBudget
+	}
 	d.BaseURL = strings.TrimRight(d.BaseURL, "/")
 	jobsCtx, stopJobs := context.WithCancel(context.Background())
 	return &Mover{d: d, running: map[string]bool{}, jobsCtx: jobsCtx, stopJobs: stopJobs}
@@ -111,6 +127,12 @@ type moveMetadata struct {
 // public, the thread must not have been moved already, and its original
 // post must have been written by a member and have text. A refusal is
 // sent to the member as a direct message and no dialog opens.
+//
+// The dialog opens with a suggested title when one arrives inside
+// TitleBudget, and with the start of the original post otherwise. The
+// suggester is asked only once every check has passed, so the text of a
+// post that is not moved, one in a private channel above all, goes
+// nowhere.
 func (m *Mover) HandleShortcut(ctx context.Context, sc slackx.ShortcutEvent) error {
 	if sc.TeamID != m.d.TeamID {
 		m.d.Logger.Warn("move shortcut from another workspace ignored", "team", sc.TeamID)
@@ -155,6 +177,14 @@ func (m *Mover) HandleShortcut(ctx context.Context, sc slackx.ShortcutEvent) err
 		return m.tell(ctx, sc.UserID, noTextText)
 	}
 
+	// The suggestion runs while the rest of the dialog is put together.
+	titleCtx, stopTitle := context.WithTimeout(ctx, m.d.TitleBudget)
+	defer stopTitle()
+	var suggestion <-chan suggestedTitle
+	if rootKnown {
+		suggestion = m.suggestTitle(titleCtx, root.Text)
+	}
+
 	tags, err := m.d.Store.ActiveTags(ctx)
 	if err != nil {
 		return err
@@ -163,11 +193,77 @@ func (m *Mover) HandleShortcut(ctx context.Context, sc slackx.ShortcutEvent) err
 	if err != nil {
 		return fmt.Errorf("encode move metadata: %w", err)
 	}
+	title := titleFromPost(root.Text, newUserCache(ctx, m.d.Slack))
+	if suggested := m.awaitTitle(titleCtx, suggestion); suggested != "" {
+		title = suggested
+	}
 	return m.d.Slack.OpenMoveDialog(ctx, sc.TriggerID, slackx.MoveDialog{
-		Title:           titleFromPost(root.Text, newUserCache(ctx, m.d.Slack)),
+		Title:           title,
 		Tags:            tags,
 		PrivateMetadata: string(meta),
 	})
+}
+
+// suggestedTitle is the outcome of one call to the title suggester.
+type suggestedTitle struct {
+	title string
+	err   error
+	took  time.Duration
+}
+
+// suggestTitle asks the suggester for a title in the background and
+// returns where the answer will arrive, or nil when there is no suggester
+// or nothing to title. The post goes to the suggester as Markdown, with
+// mentions left as Slack wrote them: resolving names would cost Slack
+// calls the trigger has no time for.
+func (m *Mover) suggestTitle(ctx context.Context, slackText string) <-chan suggestedTitle {
+	if m.d.Titles == nil {
+		return nil
+	}
+	post := strings.TrimSpace(markdown.FromSlack(slackText, nil))
+	if post == "" {
+		return nil
+	}
+	// Buffered, so a suggester that answers after the dialog has opened
+	// does not block.
+	out := make(chan suggestedTitle, 1)
+	go func() {
+		start := time.Now()
+		title, err := m.d.Titles.SuggestTitle(ctx, post)
+		out <- suggestedTitle{title: title, err: err, took: time.Since(start)}
+	}()
+	return out
+}
+
+// awaitTitle returns the suggested title, or "" when there is none to
+// use: no suggestion was asked for, it failed, or ctx ended first. The
+// suggestion is untrusted text for an input the member edits, so it is
+// only fitted to one short line. A failure is logged, without the post's
+// text, and the member is not told.
+func (m *Mover) awaitTitle(ctx context.Context, suggestion <-chan suggestedTitle) string {
+	if suggestion == nil {
+		return ""
+	}
+	select {
+	case got := <-suggestion:
+		ms := got.took.Milliseconds()
+		title := cutAtWord(strings.Join(strings.Fields(got.title), " "), maxSuggestedTitleRunes)
+		switch {
+		case errors.Is(got.err, context.DeadlineExceeded):
+			m.d.Logger.Info("move title suggestion ran out of time; using the start of the post", "ms", ms)
+		case got.err != nil:
+			m.d.Logger.Warn("move title suggestion failed; using the start of the post", "ms", ms, "err", got.err)
+		case title == "":
+			m.d.Logger.Warn("move title suggestion was empty; using the start of the post", "ms", ms)
+		default:
+			m.d.Logger.Info("move title suggested", "ms", ms)
+			return title
+		}
+	case <-ctx.Done():
+		m.d.Logger.Info("move title suggestion ran out of time; using the start of the post",
+			"budget_ms", m.d.TitleBudget.Milliseconds())
+	}
+	return ""
 }
 
 // HandleSubmission validates the dialog. It returns messages keyed by
@@ -366,8 +462,9 @@ func titleLine(text string) string {
 	return ""
 }
 
-// titleFromPost suggests a thread title: the first line of a Slack post
-// as plain text, capped at the dialog's limit. The member edits it.
+// titleFromPost is the title the dialog opens with when there is no
+// suggested one: the first line of a Slack post as plain text, cut
+// between words to fallbackTitleRunes. The member edits it.
 func titleFromPost(text string, users *userCache) string {
 	line := titleLine(text)
 	line = titleReference.ReplaceAllStringFunc(line, func(ref string) string {
@@ -403,9 +500,5 @@ func titleFromPost(text string, users *userCache) string {
 		}
 	}
 	line = strings.Join(strings.Fields(markdown.UnescapeSlack(line)), " ")
-
-	if r := []rune(line); len(r) > slackx.MoveTitleMaxLen {
-		line = strings.TrimSpace(string(r[:slackx.MoveTitleMaxLen]))
-	}
-	return line
+	return cutAtWord(line, fallbackTitleRunes)
 }

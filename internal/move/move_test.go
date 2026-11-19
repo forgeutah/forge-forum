@@ -922,7 +922,7 @@ func TestMover_HandleShortcut_DialogFailureIsReturned(t *testing.T) {
 	}
 }
 
-// TestTitleFromPost checks the suggested title is the first line, as plain text, within the limit.
+// TestTitleFromPost checks the fallback title is the first line, as plain text, cut between words within the limit.
 func TestTitleFromPost(t *testing.T) {
 	f := newMoveFixture(t)
 	long := strings.Repeat("wörd ", 60) // 300 characters
@@ -941,7 +941,9 @@ func TestTitleFromPost(t *testing.T) {
 		{"bullet", "• first item\n• second", "first item"},
 		{"words starting with marker letters", "try this: get the logs", "try this: get the logs"},
 		{"whitespace collapsed", "  spaced \t out   title  ", "spaced out title"},
-		{"capped", long, strings.TrimSpace(string([]rune(long)[:slackx.MoveTitleMaxLen]))},
+		{"capped between words", long, strings.TrimSpace(strings.Repeat("wörd ", 16))},
+		{"capped without a hanging comma", "We moved every one of our forty production clusters over to the new Gateway API, then rolled back", "We moved every one of our forty production clusters over to the new Gateway API"},
+		{"first line at the limit is kept whole", strings.Repeat("a", 79) + "?", strings.Repeat("a", 79) + "?"},
 		{"empty", "", ""},
 	}
 	for _, tc := range cases {
@@ -950,8 +952,8 @@ func TestTitleFromPost(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("titleFromPost(%q) = %q, want %q", tc.text, got, tc.want)
 			}
-			if n := len([]rune(got)); n > slackx.MoveTitleMaxLen {
-				t.Errorf("title is %d characters, over the limit of %d", n, slackx.MoveTitleMaxLen)
+			if n := len([]rune(got)); n > fallbackTitleRunes {
+				t.Errorf("title is %d characters, over the limit of %d", n, fallbackTitleRunes)
 			}
 		})
 	}

@@ -48,6 +48,9 @@ type Config struct {
 
 	AnthropicAPIKey string
 	ClassifierModel string
+	// TitleModel suggests the title the "Move to forum" dialog opens
+	// with. It has about a second to answer, so it is a fast model.
+	TitleModel string
 }
 
 // SlackEnabled reports whether the forum can talk to Slack at all, which
@@ -84,6 +87,7 @@ func Load(getenv func(string) string) (Config, error) {
 		SlackAnnounceChannel: get("SLACK_ANNOUNCE_CHANNEL", ""),
 		AnthropicAPIKey:      get("ANTHROPIC_API_KEY", ""),
 		ClassifierModel:      get("CLASSIFIER_MODEL", "claude-sonnet-5-5"),
+		TitleModel:           get("TITLE_MODEL", "claude-haiku-5-5"),
 	}
 
 	var errs []error

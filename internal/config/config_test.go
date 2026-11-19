@@ -32,8 +32,34 @@ func TestLoad_RequiredValues_Loads(t *testing.T) {
 	if c.ListenAddr != ":8080" || c.AdminRole != "admin" || c.ClassifierModel != "claude-sonnet-5-5" {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
+	if c.TitleModel != "claude-haiku-5-5" {
+		t.Errorf("TitleModel = %q, want the default claude-haiku-5-5", c.TitleModel)
+	}
 	if c.PublicBaseURL != "https://forum.example.test" {
 		t.Errorf("PublicBaseURL = %q, want trailing slash trimmed", c.PublicBaseURL)
+	}
+}
+
+// TestLoad_TitleModel_Overridden checks TITLE_MODEL replaces the default
+// and leaves the classifier's model alone.
+func TestLoad_TitleModel_Overridden(t *testing.T) {
+	m := base()
+	m["TITLE_MODEL"] = " claude-sonnet-5-5 "
+	c, err := Load(env(m))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.TitleModel != "claude-sonnet-5-5" {
+		t.Errorf("TitleModel = %q, want claude-sonnet-5-5", c.TitleModel)
+	}
+	if c.ClassifierModel != "claude-sonnet-5-5" {
+		t.Errorf("ClassifierModel = %q, want its default", c.ClassifierModel)
+	}
+
+	m["TITLE_MODEL"] = "claude-opus-5-5"
+	m["CLASSIFIER_MODEL"] = "claude-haiku-5-5"
+	if c, err = Load(env(m)); err != nil || c.TitleModel != "claude-opus-5-5" || c.ClassifierModel != "claude-haiku-5-5" {
+		t.Errorf("TitleModel = %q, ClassifierModel = %q, err = %v; want the two settings kept apart", c.TitleModel, c.ClassifierModel, err)
 	}
 }
 

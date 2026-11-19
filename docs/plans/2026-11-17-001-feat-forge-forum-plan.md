@@ -47,7 +47,7 @@ The detail people contributed is effectively lost, and the next long discussion 
 - **Slack is the front door.** Members are told about forum activity in Slack rather than expected to visit unprompted. Governs R11, R12, R13.
 - **Moving a thread imports first-level replies only.** This rescues the direct answers now and leaves reply-tree reconstruction to the later conversion work. Governs R15, R16, R17.
 - **Any member can move a thread, and authors do not opt in.** Imported posts carry their Slack authors' names; authors keep control afterwards. Governs R14, R19.
-- **The move dialog pre-fills the title from the original post's first line.** The member edits it; no AI-suggested title, which keeps AI to the one job of classifying replies. Governs R14.
+- **The move dialog pre-fills a short title suggested by AI from the original post.** The member can edit it. When the suggestion is not ready in time, the dialog pre-fills the start of the post. Governs R14.
 - **The announcement channel is an operator setting.** Forge names the channel at deploy time. Governs R11.
 
 <!-- ce-section: work-relationships -->
@@ -185,6 +185,7 @@ flowchart TB
 - The Forge design system supplies tokens, type classes, a logo, and component specimens, with no packaged components. Thread lists, vote controls, nested replies, and the editor are new work in its style.
 - The `admin` role in forge-proxy is the right group to moderate the forum; roles are assigned by forge-proxy operators.
 - AI classification in R16 will sometimes be wrong. A direct response left in Slack remains reachable through the R17 link.
+- The AI-suggested title in R14 will sometimes be poor or arrive too late. The member edits the title before the thread is created.
 
 ### Sources / Research
 
@@ -200,7 +201,7 @@ flowchart TB
 
 ## Planning Contract
 
-Product Contract preservation: changed: R14, R11 — the two questions deferred to planning are resolved as Key Decisions (title pre-fill, announcement channel as a setting); no other scope change.
+Product Contract preservation: changed: R14, R11 — the two questions deferred to planning are resolved as Key Decisions (an AI-suggested title pre-fill, announcement channel as a setting); no other scope change.
 
 ### Key Technical Decisions
 
@@ -216,6 +217,7 @@ Product Contract preservation: changed: R14, R11 — the two questions deferred 
 - KTD10. **Deployment is a static binary under systemd on an exe.dev VM.** Config comes from a root-owned env file, data lives under `/var/lib/forge-forum`, and the VM joins the Forge tailnet so forge-proxy and forge-bot can reach port 8080 and the forum can reach forge-bot. Litestream replication is documented as an optional sidecar, matching forge-proxy.
 - KTD11. **Post bodies are stored as Markdown and rendered with goldmark, then sanitized.** Raw HTML is disabled and output passes through bluemonday. Imported Slack text is converted from mrkdwn by an in-repo converter because no maintained Go library does that direction. Serves R5, R15, R16.
 - KTD12. **Deletion is soft.** A deleted reply with replies under it renders as the R10 placeholder; one with none disappears. A deleted or admin-removed thread leaves the feed and its URL shows a removed notice.
+- KTD13. **The dialog's title comes from a fast model with a 1.5 second budget.** Slack allows three seconds from the member's click to open the dialog, and the rest of that path takes about one. Once the pre-dialog checks pass, the forum asks Claude Haiku 5.5 (the default; the model is a setting, `TITLE_MODEL`) for a title in one request with no tools, low effort, and no retry, and waits for it while it loads the tags and builds the fallback title. The request starts only after the checks so that the text of a post in a private channel is never sent. If no title arrives inside the budget, or the request fails, the dialog opens with the start of the post's first line, cut between words to 80 characters; the failure is logged and the member is not told. The post is passed as untrusted data inside a delimited block, and the suggestion only pre-fills a field the member can edit. Serves R14.
 
 ### High-Level Technical Design
 
@@ -245,7 +247,8 @@ sequenceDiagram
   G->>S: ack
   G->>F: POST shortcut (service token)
   F->>S: check channel is public and thread not moved
-  F->>S: open dialog (title pre-filled, tags)
+  F->>C: suggest a title (1.5 second budget)
+  F->>S: open dialog (suggested title, tags)
   F-->>G: 200
   M->>S: submit
   S->>G: view submission
@@ -270,7 +273,7 @@ internal/forum/         threads, replies, votes, tags, tree building
 internal/markdown/      render + sanitize, Slack mrkdwn conversion
 internal/slackx/        Slack interface, real client, fake, forge-bot interactions endpoint
 internal/notify/        outbox writer and worker
-internal/move/          move job, classifier interface, Claude classifier
+internal/move/          move job, classifier interface, Claude classifier, title suggester
 internal/web/           handlers, templates/*.html, assets/ (CSS, logo)
 deploy/                 forge-forum.service, env example, runbook
 ```
@@ -429,13 +432,13 @@ deploy/                 forge-forum.service, env example, runbook
 
 **Goal:** A member can move a public Slack thread to the forum from Slack.
 
-**Requirements:** R14, R15, R16, R17, R18, R19, R20; KTD5, KTD7. Covers AE5, AE6, AE7, AE8.
+**Requirements:** R14, R15, R16, R17, R18, R19, R20; KTD5, KTD7, KTD13. Covers AE5, AE6, AE7, AE8.
 
 **Dependencies:** U5, U6.
 
-**Files:** `internal/slackx/inbound.go`, `internal/slackx/inbound_test.go`, `cmd/forge-forum/build.go`, `internal/move/handler.go`, `internal/move/job.go`, `internal/move/move_test.go`, `internal/forum/import.go`
+**Files:** `internal/slackx/inbound.go`, `internal/slackx/inbound_test.go`, `cmd/forge-forum/build.go`, `internal/move/handler.go`, `internal/move/title.go`, `internal/move/title_test.go`, `internal/move/job.go`, `internal/move/move_test.go`, `internal/forum/import.go`
 
-**Approach:** forge-bot acknowledges each interaction to Slack and posts it to the forum's interactions endpoint, which checks the bearer token and routes the shortcut and the dialog submission to the move handler. A shortcut answers 200 once the dialog is open, or 500 so the bot tells the member; a submission answers with its field errors, or none, well inside the 2.5 seconds the bot waits. The handler resolves the thread root from the invoked message, refuses non-public channels, and answers an already-moved thread with its link. The job follows KTD7, creates member rows for unseen Slack authors from Slack profile data, marks imported posts, records the count left in Slack, and enqueues the link-back in place of the announcement.
+**Approach:** forge-bot acknowledges each interaction to Slack and posts it to the forum's interactions endpoint, which checks the bearer token and routes the shortcut and the dialog submission to the move handler. A shortcut answers 200 once the dialog is open, or 500 so the bot tells the member; a submission answers with its field errors, or none, well inside the 2.5 seconds the bot waits. The handler resolves the thread root from the invoked message, refuses non-public channels, and answers an already-moved thread with its link. It then opens the dialog with a title suggested from the original post, or with the start of that post when the suggestion fails or is late (KTD13). The job follows KTD7, creates member rows for unseen Slack authors from Slack profile data, marks imported posts, records the count left in Slack, and enqueues the link-back in place of the announcement.
 
 **Test scenarios:**
 - Covers AE5. A 50-reply thread where the fake classifier marks 12 direct yields a forum thread with the original post as body, 12 first-level replies in original order under their authors, and "38 remain" recorded.
@@ -443,7 +446,13 @@ deploy/                 forge-forum.service, env example, runbook
 - Covers AE7. Moving the same Slack thread again returns the existing forum link and creates nothing.
 - Covers AE8. A shortcut invoked in a private channel or direct message is refused before any dialog opens.
 - An imported author who has never signed in is credited by Slack name; when they later sign in they can edit that post.
-- The shortcut invoked on a reply moves the whole thread from its root.
+- The shortcut invoked on a reply moves the whole thread from its root, and the title is suggested from the root post.
+- With a fake suggester, the dialog opens with the suggested title.
+- A suggester that fails, answers blank, or is not configured leaves the dialog pre-filled with the start of the post's first line, at most 80 characters and cut between words.
+- A suggester slower than the budget does not hold the dialog: it opens with the fallback once the budget is spent.
+- A refused move (private channel, already moved, original post without text or started by an app) never calls the suggester.
+- The Claude suggester returns one clean line from a canned answer: quotes, extra lines, and a trailing period are removed, and an over-long answer is cut between words. An empty answer, an API error, and a stalled server each return an error, after exactly one request.
+- The suggester's request carries the post inside its data block, low effort, and no tools.
 - The classifier failing leaves no thread and tells the mover it failed.
 - A submission with no tag selected returns a dialog validation error.
 - An interaction without the service token is refused with 401 and reaches no handler; with "Move to forum" off the endpoint answers 404.
