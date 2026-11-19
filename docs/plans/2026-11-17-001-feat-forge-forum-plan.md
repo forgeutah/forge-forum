@@ -115,6 +115,12 @@ The breakdown below is the current understanding, not a committed roadmap.
 
 - R22. The forum follows the Forge design system's visual tokens and its copy rules in `../forge-design-system/README.md`.
 
+**Live updates**
+
+- R23. A member viewing a thread sees a reply posted by someone else appear under the post it answers without reloading; it is added at the end of its level and the upvote order returns on the next load.
+- R24. A member viewing a thread sees who is writing a reply on it, and never sees their own typing.
+- R25. Every page works without JavaScript; live updates are an addition, not a requirement to read or post.
+
 ### Key Flows
 
 - F1. Start and grow a discussion
@@ -168,6 +174,7 @@ flowchart TB
 - A wiki generated from forum content.
 - Public or guest read access.
 - Email notifications and in-forum notification feeds.
+- Live vote counts, live edits and deletions, and a live feed.
 - Marking a reply as the accepted answer.
 
 **Outside this product's identity**
@@ -218,6 +225,7 @@ Product Contract preservation: changed: R14, R11 — the two questions deferred 
 - KTD11. **Post bodies are stored as Markdown and rendered with goldmark, then sanitized.** Raw HTML is disabled and output passes through bluemonday. Imported Slack text is converted from mrkdwn by an in-repo converter because no maintained Go library does that direction. Serves R5, R15, R16.
 - KTD12. **Deletion is soft.** A deleted reply with replies under it renders as the R10 placeholder; one with none disappears. A deleted or admin-removed thread leaves the feed and its URL shows a removed notice.
 - KTD13. **The dialog's title comes from a fast model with a 1.5 second budget.** Slack allows three seconds from the member's click to open the dialog, and the rest of that path takes about one. Once the pre-dialog checks pass, the forum asks Claude Haiku 5.5 (the default; the model is a setting, `TITLE_MODEL`) for a title in one request with no tools, low effort, and no retry, and waits for it while it loads the tags and builds the fallback title. The request starts only after the checks so that the text of a post in a private channel is never sent. If no title arrives inside the budget, or the request fails, the dialog opens with the start of the post's first line, cut between words to 80 characters; the failure is logged and the member is not told. The post is passed as untrusted data inside a delimited block, and the suggestion only pre-fills a field the member can edit. Serves R14.
+- KTD14. **Live updates use one WebSocket per open thread page and an in-memory hub.** The socket goes through the proxy contract (KTD4) and accepts only the forum's own origin, because the proxy session cookie is sent automatically. The server stamps who is typing. The browser fetches each new reply as server-rendered HTML, so live content is sanitized exactly like the page (KTD11). One plain script file, no build step (KTD1). Serves R23, R24, R25.
 
 ### High-Level Technical Design
 
