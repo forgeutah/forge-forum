@@ -1,6 +1,7 @@
 // Package web serves the forum's pages: server-rendered HTML, plain form
-// posts with redirect-after-post, and embedded static assets. There is no
-// client-side JavaScript.
+// posts with redirect-after-post, and embedded static assets. Every page
+// works without JavaScript; the thread page adds live replies and a
+// typing indicator over a WebSocket when it is available (see live.go).
 //
 // Adding a page: write templates/<name>.html defining a "main" template,
 // give it a view struct that embeds Page (fill it with s.page), register
@@ -27,6 +28,7 @@ import (
 	"github.com/forgeutah/forge-forum/internal/db"
 	"github.com/forgeutah/forge-forum/internal/forum"
 	"github.com/forgeutah/forge-forum/internal/identity"
+	"github.com/forgeutah/forge-forum/internal/realtime"
 )
 
 //go:embed templates/*.html
@@ -43,7 +45,9 @@ const (
 	// thread body of forum.MaxBodyLen characters.
 	maxFormBytes = 1 << 20
 
-	contentSecurityPolicy = "default-src 'none'; script-src 'self'; " +
+	// baseSecurityPolicy is the Content-Security-Policy before New adds
+	// connect-src for the live socket.
+	baseSecurityPolicy = "default-src 'none'; script-src 'self'; " +
 		"style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
 		"img-src 'self' https:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 )
@@ -56,9 +60,19 @@ type Server struct {
 	identity func(http.Handler) http.Handler
 	pages    map[string]*template.Template
 	assets   http.Handler
+	// hub carries live events to the thread pages that are open.
+	hub *realtime.Hub
+	// origin is the public address's scheme and host; it is empty when
+	// PublicBaseURL is not an http(s) URL, and then no live connection
+	// is accepted.
+	origin origin
+	// csp is the Content-Security-Policy every response carries.
+	csp string
 }
 
-// New builds the server and parses its templates.
+// New builds the server and parses its templates. It registers itself as
+// store's reply listener, so replies reach the thread pages that are
+// open. Call Close when shutting down.
 func New(cfg config.Config, database *db.DB, store *forum.Store, logger *slog.Logger) (*Server, error) {
 	if len(cfg.ProxySecrets) == 0 {
 		return nil, errors.New("web: no proxy secret configured")
@@ -69,7 +83,11 @@ func New(cfg config.Config, database *db.DB, store *forum.Store, logger *slog.Lo
 		logger:   logger,
 		identity: identity.Middleware(cfg, database, logger),
 		pages:    map[string]*template.Template{},
+		hub:      realtime.NewHub(),
 	}
+	s.origin, _ = parseOrigin(cfg.PublicBaseURL)
+	s.csp = baseSecurityPolicy + "; " + s.origin.connectSrc()
+	store.SetReplyListener(s.publishReply)
 
 	names, err := fs.Glob(templateFS, "templates/*.html")
 	if err != nil {
@@ -99,7 +117,7 @@ func New(cfg config.Config, database *db.DB, store *forum.Store, logger *slog.Lo
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return s.identity(securityHeaders(s.requireCSRF(mux)))
+	return s.identity(s.securityHeaders(s.requireCSRF(mux)))
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -107,12 +125,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /threads/new", s.handleThreadNew)
 	mux.HandleFunc("POST /threads", s.handleThreadCreate)
 	mux.HandleFunc("GET /threads/{id}", s.handleThread)
+	mux.HandleFunc("GET /threads/{id}/live", s.handleLive)
 	mux.HandleFunc("POST /threads/{id}/vote", s.handleVote(forum.PostThread))
 	mux.HandleFunc("POST /threads/{id}/replies", s.handleReplyCreate)
 	mux.HandleFunc("GET /threads/{id}/edit", s.handleThreadEdit)
 	mux.HandleFunc("POST /threads/{id}/edit", s.handleThreadUpdate)
 	mux.HandleFunc("POST /threads/{id}/delete", s.handleDelete(forum.PostThread))
 	mux.HandleFunc("POST /replies/{id}/vote", s.handleVote(forum.PostReply))
+	mux.HandleFunc("GET /replies/{id}/fragment", s.handleReplyFragment)
 	mux.HandleFunc("GET /replies/{id}/edit", s.handleReplyEdit)
 	mux.HandleFunc("POST /replies/{id}/edit", s.handleReplyUpdate)
 	mux.HandleFunc("POST /replies/{id}/delete", s.handleDelete(forum.PostReply))
@@ -204,12 +224,14 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 // securityHeaders sets the headers every response carries. The policy has
-// no inline allowance: pages load only their own stylesheets, Google Fonts,
-// and https images (member avatars and images in posts).
-func securityHeaders(next http.Handler) http.Handler {
+// no inline allowance: pages load only their own stylesheets and script,
+// Google Fonts, and https images (member avatars and images in posts),
+// and connect only to the forum itself. It does not wrap the
+// ResponseWriter, so the live endpoint can still hijack the connection.
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("Content-Security-Policy", s.csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "same-origin")
 		next.ServeHTTP(w, r)

@@ -64,7 +64,8 @@ func build(ctx context.Context, cfg config.Config, database *db.DB, logger *slog
 		return nil, nil, nil, err
 	}
 
-	// "Move to forum" needs Slack and a classifier (plan KTD5, KTD8).
+	// "Move to forum" needs Slack and a classifier (plan KTD5, KTD8). The
+	// same key suggests the dialog's title (KTD13).
 	var mover *move.Mover
 	switch {
 	case cfg.MoveEnabled():
@@ -73,6 +74,7 @@ func build(ctx context.Context, cfg config.Config, database *db.DB, logger *slog
 			Store:      store,
 			DB:         database,
 			Classifier: move.NewClaudeClassifier(cfg.AnthropicAPIKey, cfg.ClassifierModel, "", nil, logger),
+			Titles:     move.NewClaudeTitleSuggester(cfg.AnthropicAPIKey, cfg.TitleModel, "", nil, logger),
 			BaseURL:    cfg.PublicBaseURL,
 			TeamID:     cfg.SlackTeamID,
 			Logger:     logger,
@@ -108,6 +110,9 @@ func build(ctx context.Context, cfg config.Config, database *db.DB, logger *slog
 	}
 	stop := func(stopCtx context.Context) {
 		cancel()
+		// End live browser connections: the HTTP server's Shutdown neither
+		// closes nor waits for hijacked WebSocket connections.
+		site.Close()
 		if mover != nil {
 			mover.Shutdown()
 		}

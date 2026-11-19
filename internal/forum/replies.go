@@ -116,7 +116,8 @@ func validReplyBody(body string) (string, error) {
 // when the thread or parent does not exist or the parent belongs to
 // another thread, ErrDeleted when either was deleted, and a
 // ValidationError for an empty or oversized body. The author of the post
-// being answered gets a Slack message when a Notifier is set.
+// being answered gets a Slack message when a Notifier is set, and the
+// reply listener, if any, hears about the reply once it has committed.
 func (s *Store) CreateReply(ctx context.Context, authorID, threadID, parentID int64, bodyMD string) (int64, error) {
 	in := newReply{AuthorID: authorID, ThreadID: threadID, ParentID: parentID, BodyMD: bodyMD}
 	var id int64
@@ -135,6 +136,9 @@ func (s *Store) CreateReply(ctx context.Context, authorID, threadID, parentID in
 		return 0, err
 	}
 	s.wake(enqueued)
+	if s.replyListener != nil {
+		s.replyListener(threadID, id, parentID, authorID)
+	}
 	return id, nil
 }
 

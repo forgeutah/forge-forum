@@ -578,11 +578,10 @@ func TestServer_NewPages_FollowCSPAndVoiceRules(t *testing.T) {
 	a.mustSubmit(admin, replyPath(gone)+"/delete")
 	a.mustSubmit(admin, "/admin/tags/careers/toggle", "active", "0")
 
-	inline := regexp.MustCompile(`(?i)<script|<style|\sstyle=|\son[a-z]+=`)
 	tags := regexp.MustCompile(`<[^>]*>`)
 	for _, path := range []string{th, th + "/edit", replyPath(parent) + "/edit", "/settings", "/settings?saved=1", "/admin/tags"} {
 		body := a.page(admin, path)
-		if m := inline.FindString(body); m != "" {
+		if m := findInline(body); m != "" {
 			t.Errorf("%s: page contains inline %q", path, m)
 		}
 		text := tags.ReplaceAllString(body, " ")
@@ -597,7 +596,7 @@ func TestServer_NewPages_FollowCSPAndVoiceRules(t *testing.T) {
 		a.submit(dana, th+"/replies", "body", ""),
 	} {
 		text := tags.ReplaceAllString(w.Body.String(), " ")
-		if strings.ContainsAny(text, "!—") || inline.MatchString(w.Body.String()) {
+		if strings.ContainsAny(text, "!—") || findInline(w.Body.String()) != "" {
 			t.Errorf("status %d page breaks the copy or CSP rules", w.Code)
 		}
 	}

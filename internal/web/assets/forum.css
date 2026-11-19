@@ -30,6 +30,19 @@ a:hover { color: var(--fg-max); text-decoration: underline; }
 }
 .skip-link:focus { top: 8px; }
 
+/* Text for screen readers only, such as the new-reply announcement. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---- nav ---- */
 .nav {
   min-height: 64px;
@@ -385,6 +398,11 @@ button.vote--inline { padding: 0 12px; }
 }
 .replies-bar__count { margin: 0; color: var(--fg-strong); }
 
+/* The top-level replies. live.js appends new ones; with none, the list
+   takes no room in the page's column. */
+.reply-list { display: flex; flex-direction: column; gap: 24px; }
+.reply-list:empty { display: none; }
+
 /* A top-level reply is a card; replies under it nest inside the card. */
 .reply-card {
   padding: 20px;
@@ -408,6 +426,19 @@ button.vote--inline { padding: 0 12px; }
 /* Past a few levels replies stop moving right; the byline names who
    each one answers instead. */
 .reply-children--flat { margin-left: 0; padding-left: 0; border-left: 0; }
+
+/* A reply that arrived while the page was open: a flame outline that
+   fades. Without motion it stays until live.js drops the class. */
+.reply--new {
+  outline: 1px solid var(--accent);
+  outline-offset: 6px;
+  border-radius: 2px;
+  animation: reply-new 4s var(--ease-out) forwards;
+}
+@keyframes reply-new {
+  0%, 40% { outline-color: var(--accent); }
+  100% { outline-color: transparent; }
+}
 
 /* The row under a post: upvote, reply, edit, delete. */
 .post-actions {
@@ -449,7 +480,24 @@ button.vote--inline { padding: 0 12px; }
 }
 .reply-form { display: flex; flex-direction: column; gap: 12px; margin: 0; }
 .disclosure .reply-form { padding: 4px 0 8px; }
-.composer { padding-top: 24px; border-top: 1px solid var(--border); }
+.composer { position: relative; padding-top: 24px; border-top: 1px solid var(--border); }
+/* "Sam is replying…" sits in the composer's top padding, so showing and
+   hiding it moves nothing. */
+.typing {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.typing[hidden] { display: none; }
 .composer__foot {
   display: flex;
   flex-wrap: wrap;
@@ -618,4 +666,5 @@ button.vote--inline { padding: 0 12px; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
+  .reply--new { animation: none; }
 }

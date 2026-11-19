@@ -42,12 +42,25 @@ type Store struct {
 	db       *db.DB
 	now      func() time.Time
 	notifier Notifier
+	// replyListener hears every reply posted on the forum, after its
+	// transaction commits. It may be nil.
+	replyListener func(threadID, replyID, parentID, authorID int64)
 }
 
 // NewStore returns a Store over database. now is the clock; pass time.Now
 // outside tests.
 func NewStore(database *db.DB, now func() time.Time) *Store {
 	return &Store{db: database, now: now}
+}
+
+// SetReplyListener registers fn to be called after each reply posted on
+// the forum has committed: never for a reply that was refused or rolled
+// back, and never for replies imported from Slack. parentID is 0 for a
+// reply to the thread itself. fn runs on the posting request's goroutine,
+// so it must not block. Pass nil to remove the listener. Call it before
+// the store is shared between goroutines.
+func (s *Store) SetReplyListener(fn func(threadID, replyID, parentID, authorID int64)) {
+	s.replyListener = fn
 }
 
 // Now returns the store's current time, so callers that format relative

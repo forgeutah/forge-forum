@@ -39,6 +39,7 @@ var (
 // a real SQLite database in a temp dir.
 type app struct {
 	t     *testing.T
+	srv   *Server
 	h     http.Handler
 	db    *db.DB
 	store *forum.Store
@@ -73,7 +74,8 @@ func newApp(t *testing.T, mutate ...func(*config.Config)) *app {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	a.h = srv.Handler()
+	t.Cleanup(srv.Close)
+	a.srv, a.h = srv, srv.Handler()
 	return a
 }
 
@@ -108,6 +110,18 @@ func (a *app) post(u user, path string, form url.Values) *httptest.ResponseRecor
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	u.sign(r)
 	return a.do(r)
+}
+
+// liveScriptTag is the one script tag a page may carry: the thread page's
+// external live-updates file.
+const liveScriptTag = `<script src="/assets/live.js" defer></script>`
+
+var inlineCode = regexp.MustCompile(`(?i)<script|<style|\sstyle=|\son[a-z]+=`)
+
+// findInline returns the first inline script, style block, style
+// attribute, or event handler in body, or "" when it keeps to the CSP.
+func findInline(body string) string {
+	return inlineCode.FindString(strings.ReplaceAll(body, liveScriptTag, ""))
 }
 
 var csrfInput = regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
@@ -328,7 +342,7 @@ func TestServer_Thread_ScriptAndFencedCode_RendersCodeNoScript(t *testing.T) {
 	a := newApp(t)
 	md := "Look at **this**:\n\n<script>alert('pwn')</script>\n\n```yaml\nrequire: [acceptance_test, owner]\n```\n"
 	loc := a.createThread(sam, "Code sample", md, "go")
-	body := a.get(sam, loc).Body.String()
+	body := strings.ReplaceAll(a.get(sam, loc).Body.String(), liveScriptTag, "")
 	wantContains(t, body, "<strong>this</strong>", "<pre><code", "require: [acceptance_test, owner]")
 	wantNotContains(t, body, "<script", "alert('pwn')")
 }
@@ -515,9 +529,8 @@ func TestServer_HTMLResponses_CarrySecurityHeaders(t *testing.T) {
 func TestServer_Pages_NoInlineScriptOrStyle(t *testing.T) {
 	a := newApp(t)
 	loc := a.createThread(sam, "Any thread", "Body", "go")
-	inline := regexp.MustCompile(`(?i)<script|<style|\sstyle=|\son[a-z]+=`)
 	for _, path := range []string{"/", "/threads/new", loc, "/nope"} {
-		if m := inline.FindString(a.get(sam, path).Body.String()); m != "" {
+		if m := findInline(a.get(sam, path).Body.String()); m != "" {
 			t.Errorf("%s: page contains inline %q", path, m)
 		}
 	}
@@ -530,6 +543,7 @@ func TestServer_Assets_Served(t *testing.T) {
 		"/assets/forum.css":      "text/css",
 		"/assets/tokens.css":     "text/css",
 		"/assets/forge-icon.svg": "image/svg+xml",
+		"/assets/live.js":        "text/javascript",
 	}
 	for path, ctype := range cases {
 		w := a.get(sam, path)

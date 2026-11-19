@@ -1,5 +1,5 @@
 {{define "main"}}
-<main id="main" class="main main--thread">
+<main id="main" class="main main--thread" data-thread-id="{{.Thread.ID}}" data-member-id="{{.Member.ID}}" data-live-path="/threads/{{.Thread.ID}}/live">
 
 <a class="back-link" href="/">← back to feed</a>
 
@@ -48,17 +48,19 @@ This thread started in Slack.
 </article>
 
 <div class="replies-bar" id="replies">
-<h2 class="fu-label replies-bar__count">{{if .Counts.Live}}{{plural .Counts.Live "reply" "replies"}}{{else}}no replies yet{{end}}</h2>
+<h2 class="fu-label replies-bar__count" id="reply-count" data-count="{{.Counts.Live}}">{{if .Counts.Live}}{{plural .Counts.Live "reply" "replies"}}{{else}}no replies yet{{end}}</h2>
 <span class="meta">sorted by upvotes at each level</span>
 </div>
 
-{{range .Replies -}}
-<section class="reply-card{{if .N.Deleted}} reply-card--deleted{{end}}" aria-label="{{if .N.Deleted}}Deleted reply{{else}}Reply from {{.N.AuthorName}}{{end}}">
-{{template "reply" .}}
-</section>
-{{end}}
+{{- /* live.js appends new top-level replies to this list. It must be
+       truly empty when there are none, so the stylesheet can hide it. */ -}}
+<div class="reply-list" id="reply-list">{{- range .Replies}}{{template "reply-card" .}}{{end -}}</div>
 
 <section class="composer" aria-label="Write a reply">
+{{- /* live.js fills these two: who is replying right now, and the
+       screen-reader announcement of a reply that just arrived. */}}
+<p class="typing" id="typing-indicator" hidden></p>
+<p class="visually-hidden" id="live-announcer" aria-live="polite"></p>
 <form class="reply-form" method="post" action="/threads/{{.Thread.ID}}/replies">
 {{template "csrf" .}}
 {{template "form-error" .Draft.Error}}
@@ -74,12 +76,23 @@ This thread started in Slack.
 </section>
 
 </main>
+<script src="/assets/live.js" defer></script>
+{{end}}
+
+{{- /* reply-card renders a top-level reply in its card. It takes a
+       replyView. The fragment endpoint renders it on its own, too. */ -}}
+{{define "reply-card"}}
+<section class="reply-card{{if .N.Deleted}} reply-card--deleted{{end}}" aria-label="{{if .N.Deleted}}Deleted reply{{else}}Reply from {{.N.AuthorName}}{{end}}">
+{{template "reply" .}}
+</section>
 {{end}}
 
 {{- /* reply renders one reply and, under it, its children. It takes a
-       replyView and calls itself for each child. */ -}}
+       replyView and calls itself for each child. live.js adds replies
+       to the reply-children container, creating it (flat when the reply
+       carries data-flat-children) if the reply had no children. */ -}}
 {{define "reply"}}
-<div class="reply" id="reply-{{.N.ID}}">
+<div class="reply" id="reply-{{.N.ID}}"{{if .FlatChildren}} data-flat-children{{end}}>
 {{if .N.Deleted -}}
 <p class="reply__placeholder">{{if .N.Removed}}[ reply removed by a moderator ]{{else}}[ reply deleted by its author ]{{end}}</p>
 {{- else -}}
