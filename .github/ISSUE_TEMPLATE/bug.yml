@@ -1,0 +1,76 @@
+name: Something is broken
+description: The forum did something wrong, or did not do something it should.
+title: "[Bug] "
+labels: ["bug", "proposed"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Forge Forum is fixed from issues, not pull requests. An owner accepts the issue and an AI agent finds the cause and fixes it. The more exactly you describe what you did and saw, the faster that goes.
+
+        Do not paste private messages, tokens, or anything from a private Slack channel.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including the exact wording of any message on the page or in Slack.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen
+      description: Numbered steps, starting from opening the forum or Slack. Say whether it happens every time.
+      placeholder: |
+        1. Open a thread that was moved from Slack.
+        2. Click "reply" under the second reply.
+        3. Type a reply and press "Post reply".
+        4. The page shows "That form expired". Happens every time.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - The forum in a browser
+        - A message from the bot in Slack
+        - The "Move to forum" action in Slack
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: link
+    attributes:
+      label: Link to the thread or page
+      description: Optional. The forum address where it happened.
+    validations:
+      required: false
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and device
+      placeholder: "Safari on iPhone, Chrome on Mac"
+    validations:
+      required: false
+  - type: input
+    id: when
+    attributes:
+      label: When it happened
+      description: Date and rough time with your time zone. This lets an operator find it in the logs.
+      placeholder: "18 Nov 2026, about 4:15 pm Mountain"
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Optional. Drag images here. Hide anything private first.
+    validations:
+      required: false

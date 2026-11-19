@@ -64,6 +64,33 @@ Settings come from environment variables only. [deploy/forge-forum.env.example](
 
 To change the schema, add a new numbered file under `internal/db/migrations/`. Migrations are applied in filename order at startup and are forward-only.
 
+## Contributing
+
+Forge Forum takes issues, not code. Nobody outside the owners opens pull requests, and pull requests that do not come from the process below are closed without review. If you want something added, changed, or fixed, describe it well in an issue and an AI agent does the building.
+
+How a change moves:
+
+| Step | What happens | Label on the issue |
+|---|---|---|
+| 1. Propose | You open an issue with one of the forms. The forms ask for the problem, what a member should see and do, a walk-through, and a checklist of when it is done. | `proposed` |
+| 2. Accept | An owner reads it and accepts or declines it. Owners may ask you to sharpen it first. | `accepted` or `declined` |
+| 3. Design | An agent produces the UI and UX design for it in the Forge design system and posts it on the issue. Owners and the person who asked comment there. | `design-review` |
+| 4. Approve the design | An owner approves the design. No code is written before this. | `design-approved` |
+| 5. Build | An agent builds it against the approved design and the issue's checklist, with tests, and opens a pull request linked to the issue. | `building` |
+| 6. Merge | An owner reviews the pull request and merges it. The issue closes. | closed |
+
+Changes with nothing to look at, such as a bug fix or a speed-up, skip steps 3 and 4.
+
+What makes an issue buildable:
+
+- **Say what a member sees and does**, not how to code it. The agent decides the how.
+- **Give a real example** of the problem.
+- **Write the "done when" list so anyone could check it** without reading code.
+- **Keep it to one thing.** Two ideas are two issues.
+- **Say what is out.** It keeps the design and the build small.
+
+Questions and half-formed ideas belong on [the forum](https://forum.forgeut.dev) or in Forge Utah Slack until they are ready to be an issue.
+
 ## Deploying
 
 [deploy/RUNBOOK.md](deploy/RUNBOOK.md) covers deploying to the exe.dev VM, registering the forum with forge-proxy and forge-bot, and the checks to run afterwards.

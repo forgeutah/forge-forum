@@ -1,0 +1,101 @@
+name: Feature or change
+description: Ask for something new, or for something to work differently.
+title: "[Feature] "
+labels: ["proposed"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Forge Forum is built from issues, not pull requests. If an owner accepts this issue, an AI agent designs it first and builds it once the design is approved. See the "Contributing" section of the README.
+
+        Write for a reader who has never seen the forum's code. The agent builds what this issue says, so describe what a member sees and does, not how to code it.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard, missing, or annoying today, and for whom? One real example beats a general statement.
+      placeholder: "Long threads are hard to catch up on. Last week a 40-reply thread on Go generics had three useful answers and I had to read all 40 to find them."
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What should happen instead
+      description: Describe the result from a member's point of view. Say what they see and what they can do.
+      placeholder: "A member opening a long thread can see a short summary of the main answers at the top, and jump from each point to the reply it came from."
+    validations:
+      required: true
+  - type: textarea
+    id: walkthrough
+    attributes:
+      label: Walk through it
+      description: Step by step, what does one member do and what does the forum show at each step? Include what happens when something is empty, fails, or is not allowed.
+      placeholder: |
+        1. Dana opens a thread with 40 replies.
+        2. Above the replies she sees "Summary" with three bullet points.
+        3. She clicks the second point and the page scrolls to the reply it came from.
+        4. On a thread with fewer than 10 replies, no summary is shown.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: It is done when
+      description: A checklist someone could test without reading code. Each line should be true or false.
+      placeholder: |
+        - [ ] Threads with 10 or more replies show a summary above the replies.
+        - [ ] Each summary point links to a reply on the same page.
+        - [ ] The summary updates within a minute of a new reply.
+        - [ ] The page works with JavaScript off.
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Not part of this
+      description: Related things you are deliberately leaving out, so the design and build stay small.
+      placeholder: "Summaries in Slack. Summaries of the whole feed. Letting members edit the summary."
+    validations:
+      required: false
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: Where it shows up
+      description: Tick every place a member would notice the change.
+      options:
+        - label: The feed
+        - label: A thread page
+        - label: The new thread or edit forms
+        - label: Settings
+        - label: Admin pages
+        - label: Messages the bot sends in Slack
+        - label: The "Move to forum" action in Slack
+        - label: A new page or screen
+        - label: Nothing visible (behaviour, speed, or reliability only)
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who is it for
+      options:
+        - Every member
+        - People who post threads
+        - People who reply
+        - Admins and moderators
+        - Forge operators running the service
+    validations:
+      required: true
+  - type: textarea
+    id: design-notes
+    attributes:
+      label: Design notes
+      description: Optional. Sketches, screenshots, or examples from other products. The design step follows the Forge design system, so describe intent, not colours and fonts.
+    validations:
+      required: false
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Things it must not break or change
+      description: Optional. Privacy expectations, behaviour members rely on, or limits you know about.
+      placeholder: "Nothing from a members-only thread may be visible to someone who is not signed in."
+    validations:
+      required: false
